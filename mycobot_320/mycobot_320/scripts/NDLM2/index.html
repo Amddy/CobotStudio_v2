@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Noche de los Museos - Robot Dibujante</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin: 0; padding: 10px; background: #f0f0f0; }
+    h2 { margin: 5px 0; }
+    #canvas-container { display: flex; justify-content: center; margin: 10px 0; }
+    /* Bloquear scroll táctil para evitar distorsión en el trazo */
+    canvas { 
+      background: #ffffff; 
+      border: 2px solid #333; 
+      touch-action: none; 
+      width: 300px; /* Tamaño visual responsivo */
+      height: 400px;
+    }
+    .controls { margin-top: 10px; }
+    input[type="text"] { padding: 8px; font-size: 16px; width: 220px; border-radius: 4px; border: 1px solid #ccc; }
+    button { padding: 10px 20px; font-size: 16px; margin: 5px; cursor: pointer; border-radius: 4px; border: none; }
+    .btn-send { background: #28a745; color: white; }
+    .btn-clear { background: #dc3545; color: white; }
+  </style>
+</head>
+<body>
+  <h2>Dibuja para el Robot</h2>
+  <p>Tu dibujo se trazará a escala real (120 x 160 mm)</p>
+  
+  <div>
+    <input type="text" id="authorName" placeholder="Tu nombre..." maxlength="25">
+  </div>
+
+  <div id="canvas-container">
+    <!-- Resolución interna fija: 600x800 px (5 px por mm) -->
+    <canvas id="paintCanvas" width="600" height="800"></canvas>
+  </div>
+
+  <div class="controls">
+    <button class="btn-clear" onclick="clearCanvas()">Borrar</button>
+    <button class="btn-send" onclick="sendDrawing()">Enviar al Robot</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('paintCanvas');
+    const ctx = canvas.getContext('2d');
+    let drawing = false;
+
+    // Configuración de trazo
+    ctx.lineWidth = 10;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#000000';
+
+    function getPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+    }
+
+    function startDraw(e) { drawing = true; const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+    function draw(e) {
+      if (!drawing) return;
+      e.preventDefault();
+      const p = getPos(e);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    }
+    function endDraw() { drawing = false; }
+
+    canvas.addEventListener('mousedown', startDraw);
+    canvas.addEventListener('mousemove', draw);
+    window.addEventListener('mouseup', endDraw);
+    canvas.addEventListener('touchstart', startDraw, { passive: false });
+    canvas.addEventListener('touchmove', draw, { passive: false });
+    window.addEventListener('touchend', endDraw);
+
+    function clearCanvas() { ctx.clearRect(0, 0, canvas.width, canvas.height); }
+
+    async function sendDrawing() {
+      const name = document.getElementById('authorName').value.trim();
+      if (!name) { alert("Por favor, ingresa tu nombre."); return; }
+      
+      const dataURL = canvas.toDataURL('image/png');
+      const response = await fetch('/api/submit_drawing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, image_base64: dataURL })
+      });
+      const result = await response.json();
+      alert(result.message);
+      clearCanvas();
+      document.getElementById('authorName').value = '';
+    }
+  </script>
+</body>
+</html>

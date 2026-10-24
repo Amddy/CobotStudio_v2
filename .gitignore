@@ -1,0 +1,10 @@
+__pycache__/
+.env.vscode/
+build/
+install/
+log/
+*.db
+*.sqlite3
+ssh*
+*.pub
+.vscode
