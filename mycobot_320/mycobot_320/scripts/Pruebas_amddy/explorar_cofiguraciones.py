@@ -73,7 +73,7 @@ def graficar_comparativa_configuraciones(pose_objetivo, opciones, conf_actual=No
 
 
 def obtener_q_actual(robot: BaseRobotController) -> np.ndarray:
-    """Obtiene el vector articular actual (en rad) sin disparar warnings de GhostDriver en ROS."""
+    """Obtiene el vector articular actual (en rad) en ROS."""
     #  Solo consultar robot.mc si estamos en el controlador físico real
     if robot.__class__.__name__ == "MyCobotController" and hasattr(robot, "mc"):
         try:
@@ -98,7 +98,7 @@ def obtener_q_actual(robot: BaseRobotController) -> np.ndarray:
     return np.zeros(6, dtype=float)
 
 
-def ir_a_home(robot: BaseRobotController, speed: int = 30):
+def ir_a_home(robot: BaseRobotController, speed: int = 20):
     """Lleva el robot a la posición Home [0, 0, 0, 0, 0, 0] de manera compatible con ROS y Real."""
     print(">>> Moviendo el robot a HOME [0, 0, 0, 0, 0, 0]...")
     if hasattr(robot, "GoHome"):
@@ -107,7 +107,7 @@ def ir_a_home(robot: BaseRobotController, speed: int = 30):
         robot.MoveJ_q([0, 0, 0, 0, 0, 0], speed, 'deg')
     elif hasattr(robot, "MoveJAngles"):
         robot.MoveJAngles(np.zeros(6), speed=speed, unit='rad')
-    time.sleep(2.0)
+    time.sleep(3.0)
 
 
 def guardar_metadata_en_archivo(nombre_archivo: str, metadata: dict, pose_objetivo: SE3):
@@ -222,7 +222,7 @@ def run(robot: BaseRobotController, **kwargs):
         elif entrada == 'h':
             if hasattr(robot, "toggle_ros_connection"):
                 robot.toggle_ros_connection(False)
-            ir_a_home(robot, speed=30)
+            ir_a_home(robot, speed=20)
             if hasattr(robot, "toggle_ros_connection"):
                 robot.toggle_ros_connection(True)
             continue
@@ -285,7 +285,7 @@ def run(robot: BaseRobotController, **kwargs):
                     continue
 
                 print(f"\n--- [Configuración #{idx_seq}: {opt['conf']}] Paso 1: Subiendo a HOME ---")
-                ir_a_home(robot, speed=30)
+                ir_a_home(robot, speed=20)
 
                 print(f"--- [Configuración #{idx_seq}: {opt['conf']}] Paso 2: Bajando a Pose Objetivo ---")
                 robot.MoveJ(opt['robt'], speed=25, tool=tool, wobj=wobj, robt_name=f"Conf_{idx_seq}")
@@ -300,7 +300,7 @@ def run(robot: BaseRobotController, **kwargs):
                 if resp == 'q':
                     break
 
-            ir_a_home(robot, speed=30)
+            ir_a_home(robot, speed=20)
             if hasattr(robot, "toggle_ros_connection"):
                 robot.toggle_ros_connection(True)
             continue

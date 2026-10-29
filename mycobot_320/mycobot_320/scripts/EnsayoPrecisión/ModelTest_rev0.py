@@ -1,8 +1,8 @@
 from CobotStudio_core.Cobot_sdk import *
 import csv
 
-# pinza = SE3(-1.71, 106.91, 28.33) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
-pinza = SE3(0, 123, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
+pinza = SE3(-1.71, 106.91, 28.33) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
+# pinza = SE3(0, 123, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
 pinza_aux = pinza*SE3(0,0,25)
 
 def run(robot: BaseRobotController, **kwargs):
@@ -34,7 +34,7 @@ def run(robot: BaseRobotController, **kwargs):
 
                 # Armamos el robtarget según la pose calculada y lo enviamos al robot
                 robt = RobTarget(pose_esperada_SE3, robot.cobot_tb.calc_conf(q_rad))
-                robot.MoveJ(robt, 30, SE3(), SE3())
+                robot.MoveJ(robt, 30, pinza, SE3())
                 time.sleep(5)
 
                 # Vemos las coordenadas alcanzadas por el robot

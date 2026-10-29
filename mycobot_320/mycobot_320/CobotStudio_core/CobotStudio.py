@@ -2010,7 +2010,7 @@ class MyCobotController(BaseRobotController):
         q_actual = self.mc.get_angles()
         # Solo usar sync_send_angles si el robot está a más de 2 grados del inicio
         if not q_actual or np.max(np.abs(np.array(q_actual) - np.array(first_q_deg))) > 2.0:
-            self.mc.sync_send_angles(first_q_deg, 25)
+            self.mc.sync_send_angles(first_q_deg, 10)
 
         # Activar modo de procesamiento continuo (sin frenar entre puntos intermedios)
         self.mc.set_fresh_mode(1)
@@ -2035,6 +2035,7 @@ class MyCobotController(BaseRobotController):
                 # Informar al servidor TCP en RAM para verlo en vivo en RViz
                 if self._server_ref is not None:
                     self._server_ref.set_external_angles(q_deg)
+                    
         finally:
             # Al terminar la trayectoria (o si hay error), reanudar la lectura normal de encoders
             if self._server_ref is not None:
@@ -2049,7 +2050,7 @@ class MyCobotController(BaseRobotController):
         self.mc.set_fresh_mode(0)
         time.sleep(0.05)
         last_q_deg = waypoints[-1][0]
-        self.mc.send_angles(last_q_deg, 15)
+        self.mc.send_angles(last_q_deg, 10)
 
         # Esperar asentamiento mecánico breve para leer encoders finales sin interferir
         time.sleep(0.3)

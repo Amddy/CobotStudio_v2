@@ -1,0 +1,12 @@
+sensors:
+  - xtion_pointcloud
+
+xtion_pointcloud:
+  sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+  point_cloud_topic: /point_cloud/points
+  max_range: 1.8
+  point_subsample: 1
+  padding_offset: 0.04
+  padding_scale: 1.0
+  max_update_rate: 10.0
+  filtered_cloud_topic: /filtered_points

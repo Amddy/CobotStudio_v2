@@ -3,7 +3,7 @@ import numpy as np
 import os
 import re
 from spatialmath import SE3, SO3, UnitQuaternion
-from scripts.DHRobotGT import myCobot320
+from DHRobotGT import myCobot320
 
 # --- Funciones de Preparación y Exportación (sin cambios) ---
 

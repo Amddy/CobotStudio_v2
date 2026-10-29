@@ -309,7 +309,7 @@ class MoveItManager(Node):
         q_interp_deg = cs(t_interp)
         vel_deg_s = np.abs(cs(t_interp, 1))
 
-        # 6. Mapear velocidad máxima del paso a la escala 1..100 de pymycobot
+        # Mapear velocidad máxima del paso a la escala 1 a 100 de pymycobot
         MAX_SERVO_DEG_S = 140.0
         max_vel_por_paso = np.max(vel_deg_s, axis=1)
         speeds = np.clip(np.round((max_vel_por_paso / MAX_SERVO_DEG_S) * 100), 8, 100).astype(int)
