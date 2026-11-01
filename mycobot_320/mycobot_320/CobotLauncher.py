@@ -133,6 +133,7 @@ def initialize_environment(mode: str, project_path: Path, enable_bridge: bool):
             print("[Bridge] Configurando servidor de transmisión de datos...")
             server = CobotServer(
                 read_angles_callable=lambda: _get_angles_safe(robot),
+                mc = robot.mc,
                 port=65432
             )
             server.start()

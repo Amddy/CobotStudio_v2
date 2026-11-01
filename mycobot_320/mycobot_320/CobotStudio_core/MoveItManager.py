@@ -2,6 +2,7 @@
 #!/usr/bin/env python3
 import time
 import threading
+
 from typing import List, Optional
 from pathlib import Path
 from spatialmath import SE3
@@ -15,10 +16,16 @@ if TYPE_CHECKING:
 from rclpy.node import Node
 from std_msgs.msg import Empty, Header
 from sensor_msgs.msg import JointState
-from moveit_msgs.msg import DisplayTrajectory, RobotState
+
+from moveit_msgs.msg import DisplayTrajectory, RobotState, CollisionObject, ObjectColor
+from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
+from geometry_msgs.msg import Pose, Point
+from std_msgs.msg import ColorRGBA
+from scipy.spatial.transform import Rotation as R
+
 from moveit_msgs.srv import ApplyPlanningScene, GetStateValidity
 from moveit_msgs.srv import GetMotionPlan
-from moveit_msgs.msg import MotionPlanRequest, Constraints, JointConstraint, RobotState
+from moveit_msgs.msg import MotionPlanRequest, Constraints, JointConstraint, RobotState, AttachedCollisionObject, ObjectColor
 from sensor_msgs.msg import JointState
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -900,4 +907,131 @@ class MoveItManager(Node):
         q_goal_norm  = smart_pad(q_goal,  reference_val=start_gripper_val)
 
         return joint_names, q_start_norm, q_goal_norm, group
+    
+
+
+    def _load_stl_as_mesh_msg(self, stl_path_or_uri: str, scale: tuple) -> Optional[Mesh]:
+        """Lee un archivo STL (binario o ASCII) y construye un shape_msgs/msg/Mesh escalado."""
+        import struct
+        from urllib.parse import urlparse, unquote
+
+        if stl_path_or_uri.startswith("file://"):
+            file_path = Path(unquote(urlparse(stl_path_or_uri).path))
+        else:
+            file_path = Path(stl_path_or_uri)
+
+        if not file_path.exists():
+            self.get_logger().error(f"No se encontró el archivo STL: {file_path}")
+            return None
+
+        sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
+        mesh_msg = Mesh()
+
+        # para STL binario
+        try:
+            with open(file_path, 'rb') as f:
+                header = f.read(80)
+                num_triangles = struct.unpack('<I', f.read(4))[0]
+                for i in range(num_triangles):
+                    data = struct.unpack('<12fH', f.read(50))
+                    # data[0:3] es la normal; data[3:12] son los 3 vértices (x,y,z)
+                    for v_idx in range(3):
+                        vx = data[3 + v_idx * 3] * sx
+                        vy = data[4 + v_idx * 3] * sy
+                        vz = data[5 + v_idx * 3] * sz
+                        mesh_msg.vertices.append(Point(x=float(vx), y=float(vy), z=float(vz)))
+                    base_idx = i * 3
+                    mesh_msg.triangles.append(
+                        MeshTriangle(vertex_indices=[base_idx, base_idx + 1, base_idx + 2])
+                    )
+            return mesh_msg
+        except Exception as e:
+            self.get_logger().error(f"Error leyendo STL '{file_path}': {e}")
+            return None
+
+    def add_collision_object(self, name: str, pose_init: tuple, size: tuple,
+                             color: tuple = (0.5, 0.5, 0.5, 1.0),
+                             shape: int = 1, mesh: str = None,
+                             rot_euler: tuple = (0.0, 0.0, 0.0),
+                             frame_id: str = "base",
+                             touch_links: list = None) -> bool:
+        """
+        Agrega un objeto al PlanningScene de MoveIt como obstáculo de colisión.
+        Si se especifican 'touch_links' (ej. ['base', 'base_mesa']), MoveIt deshabilita
+        la colisión entre este objeto y dichos eslabones (equivalente a Adjacent/Never).
+        """
+        if not self._ensure_service_connection(self._apply_cli, '_apply_available', timeout=20.0):
+            return False
+
+        co = CollisionObject()
+        co.header.frame_id = frame_id
+        co.header.stamp = self.get_clock().now().to_msg()
+        co.id = name
+        co.operation = CollisionObject.ADD
+
+        pose = Pose()
+        pose.position.x = float(pose_init[0])
+        pose.position.y = float(pose_init[1])
+        pose.position.z = float(pose_init[2])
+        quat = R.from_euler('xyz', rot_euler).as_quat()  # [x, y, z, w]
+        pose.orientation.x = float(quat[0])
+        pose.orientation.y = float(quat[1])
+        pose.orientation.z = float(quat[2])
+        pose.orientation.w = float(quat[3])
+
+        if mesh is not None or shape == 10:
+            mesh_msg = self._load_stl_as_mesh_msg(mesh, size)
+            if mesh_msg is None:
+                return False
+            co.meshes.append(mesh_msg)
+            co.mesh_poses.append(pose)
+        else:
+            prim = SolidPrimitive()
+            if shape == 1:
+                prim.type = SolidPrimitive.BOX
+                prim.dimensions = [float(size[0]), float(size[1]), float(size[2])]
+            elif shape == 2:
+                prim.type = SolidPrimitive.SPHERE
+                prim.dimensions = [float(size[0]) / 2.0]
+            elif shape == 3:
+                prim.type = SolidPrimitive.CYLINDER
+                prim.dimensions = [float(size[2]), float(size[0]) / 2.0]
+            else:
+                prim.type = SolidPrimitive.BOX
+                prim.dimensions = [float(size[0]), float(size[1]), float(size[2])]
+            co.primitives.append(prim)
+            co.primitive_poses.append(pose)
+
+        req = ApplyPlanningScene.Request()
+        req.scene.is_diff = True
+
+        # Si hay touch_links definidos, se registra con touch_links para ignorar colisiones con la base
+        if touch_links:
+            aco = AttachedCollisionObject()
+            aco.link_name = frame_id
+            aco.object = co
+            aco.touch_links = list(touch_links)
+            req.scene.robot_state.attached_collision_objects.append(aco)
+            req.scene.robot_state.is_diff = True
+        else:
+            req.scene.world.collision_objects.append(co)
+
+        obj_color = ObjectColor()
+        obj_color.id = name
+        obj_color.color = ColorRGBA(
+            r=float(color[0]), g=float(color[1]), b=float(color[2]), a=float(color[3])
+        )
+        req.scene.object_colors.append(obj_color)
+
+        future = self._apply_cli.call_async(req)
+        res = self._wait_for_future(future, timeout_sec=5.0)
+
+        if res is not None and res.success:
+            self.get_logger().info(
+                f"Obstáculo '{name}' agregado a MoveIt (touch_links={touch_links})."
+            )
+            return True
+        else:
+            self.get_logger().error(f"Fallo al agregar obstáculo '{name}' a MoveIt.")
+            return False
               

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionServer
+from rclpy.executors import MultiThreadedExecutor
+from control_msgs.action import FollowJointTrajectory
 from sensor_msgs.msg import JointState
 import socket
 import threading
@@ -8,6 +11,8 @@ import time
 import json
 import math
 import subprocess
+import numpy as np
+from scipy.interpolate import CubicSpline
 
 # IP de la Raspberry Pi (el servidor)
 ROBOT_IP = "192.168.88.10"
@@ -26,11 +31,13 @@ JOINT_NAMES = [
 
 class CobotClient(Node):
     """
-    Nodo de ROS 2 que actúa como cliente TCP.
+    Nodo de ROS 2 que actúa como cliente TCP y Action Server de MoveIt.
     Se conecta al RobotServer (corriendo en la Raspberry Pi del cobot),
     recibe la telemetría en tiempo real (JSON) y publica en el tópico /joint_states.
 
-    Permite visualizar el movimiento del robot real en RViz al ejecutar una rutina.
+    Además expone el servidor de acción '/arm_controller/follow_joint_trajectory'
+    para recibir trayectorias calculadas por MoveIt en la PC y enviarlas por TCP
+    a la Raspberry Pi para su ejecución en tiempo real.
     """
     def __init__(self):
         super().__init__('tcp_joint_state_client')
@@ -38,11 +45,22 @@ class CobotClient(Node):
         # Publisher de ROS
         self.pub = self.create_publisher(JointState, '/joint_states', 10)
 
+        # EL SERVIDOR DE ACCIÓN (ESCUCHA A MOVEIT)
+        # Este servidor espera recibir mensajes de trayectoria en este tópico
+        self._action_server = ActionServer(
+            self,
+            FollowJointTrajectory,
+            '/arm_controller/follow_joint_trajectory',
+            self.execute_callback
+        )
+
         # Variables compartidas
         self._lock = threading.Lock()
         self._latest_angles_deg = None
         self._latest_data = None
         self._latest_ts = None
+        self._traj_status = "IDLE"
+        self._active_sock = None
 
         # Iniciar el hilo del cliente
         self._sock_thread = threading.Thread(target=self._socket_client_loop, daemon=True)
@@ -52,6 +70,121 @@ class CobotClient(Node):
         self.create_timer(1.0/30.0, self._publish_latest)
 
         self.get_logger().info(f"Cliente Bridge iniciado. Intentando conectar a {ROBOT_IP}:{PORT}...")
+
+    def _send_to_server(self, payload: dict) -> bool:
+        """Envía un mensaje JSON al CobotServer de la Raspberry Pi a través del socket activo."""
+        with self._lock:
+            sock = self._active_sock
+        if sock is None:
+            self.get_logger().error("No hay conexión TCP activa con la Raspberry Pi.")
+            return False
+        try:
+            message = json.dumps(payload).encode('utf-8') + b'\n'
+            sock.sendall(message)
+            return True
+        except Exception as e:
+            self.get_logger().error(f"Error enviando comando a la Raspberry Pi: {e}")
+            return False
+
+    def _interpolate_trajectory(self, points, idx_map, freq_hz: float = 25.0, max_servo_deg_s: float = 140.0):
+        """
+        Re-muestrea los waypoints de MoveIt a frecuencia constante (25 Hz) usando CubicSpline
+        y calcula la velocidad dinámica (1-100) de cada tramo según la derivada articular.
+        """
+        t_orig = np.array([p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in points], dtype=float)
+        q_orig_deg = np.array([[math.degrees(p.positions[i]) for i in idx_map] for p in points], dtype=float)
+
+        # Filtrar posibles puntos con tiempos duplicados
+        _, unique_idx = np.unique(t_orig, return_index=True)
+        t_orig = t_orig[unique_idx]
+        q_orig_deg = q_orig_deg[unique_idx]
+
+        total_time = float(t_orig[-1])
+        if len(t_orig) < 2 or total_time <= 0.05:
+            q_end = [round(float(x), 3) for x in q_orig_deg[-1]]
+            return [q_end + [20, round(total_time, 4)]]
+
+        # Ajustar Spline Cúbico con velocidad inicial y final nula (clamped)
+        cs = CubicSpline(t_orig, q_orig_deg, axis=0, bc_type='clamped')
+
+        dt = 1.0 / freq_hz
+        t_interp = np.arange(0.0, total_time, dt)
+        if t_interp[-1] < total_time:
+            t_interp = np.append(t_interp, total_time)
+
+        q_interp = cs(t_interp)
+        # Derivada primera: velocidad angular real en grados/s para cada articulación
+        dq_interp = np.abs(cs(t_interp, 1))
+        max_vel_deg_s = np.max(dq_interp, axis=1)
+
+        points_payload = []
+        for i in range(len(t_interp)):
+            # Mapear la velocidad angular requerida a la escala 1..100 de pymycobot
+            spd = int(np.clip(round((max_vel_deg_s[i] / max_servo_deg_s) * 100.0), 6, 100))
+            q_list = [round(float(val), 3) for val in q_interp[i]]
+            points_payload.append(q_list + [spd, round(float(t_interp[i]), 4)])
+
+        return points_payload
+
+    def execute_callback(self, goal_handle):
+        """Esta función se activa cuando MoveIt manda una trayectoria."""
+        self.get_logger().info('¡Trayectoria recibida de MoveIt! Interpolando y enviando a la Raspberry Pi...')
+
+        # Extraemos la lista de puntos calculados por MoveIt
+        points = goal_handle.request.trajectory.points
+        traj_joint_names = goal_handle.request.trajectory.joint_names
+
+        if not points:
+            goal_handle.abort()
+            return FollowJointTrajectory.Result()
+
+        # Asegurar el orden correcto de las 6 articulaciones del brazo según URDF
+        arm_joints = JOINT_NAMES[:6]
+        try:
+            idx_map = [traj_joint_names.index(jn) for jn in arm_joints]
+        except ValueError:
+            idx_map = list(range(6))
+
+        # Interpolar a 25 Hz con velocidades dinámicas suaves
+        points_payload = self._interpolate_trajectory(points, idx_map, freq_hz=25.0, max_servo_deg_s=140.0)
+
+        with self._lock:
+            self._traj_status = "EXECUTING"
+
+        # Enviar la trayectoria interpolada al CobotServer en la Raspberry Pi
+        if not self._send_to_server({"cmd": "EXECUTE_TRAJ", "points": points_payload}):
+            goal_handle.abort()
+            return FollowJointTrajectory.Result()
+
+        # BUCLE DE MONITOREO MIENTRAS LA RASPBERRY PI EJECUTA LA TRAYECTORIA
+        while rclpy.ok():
+            # Si MoveIt detecta un choque inminente o el usuario cancela la acción
+            if goal_handle.is_cancel_requested:
+                self.get_logger().warn('¡PARADA DE EMERGENCIA solicitada por MoveIt!')
+                self._send_to_server({"cmd": "CANCEL_TRAJ"})
+                goal_handle.canceled()
+                return FollowJointTrajectory.Result()
+
+            with self._lock:
+                status = self._traj_status
+
+            if status == "SUCCEEDED":
+                self._send_to_server({"cmd": "RESET_STATUS"})
+                goal_handle.succeed()
+                self.get_logger().info('Movimiento completado con éxito.')
+                result = FollowJointTrajectory.Result()
+                result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
+                return result
+
+            elif status in ("ABORTED", "CANCELED"):
+                self._send_to_server({"cmd": "RESET_STATUS"})
+                goal_handle.abort()
+                self.get_logger().error(f'Movimiento finalizado con estado: {status}')
+                result = FollowJointTrajectory.Result()
+                result.error_code = FollowJointTrajectory.Result.INVALID_GOAL
+                return result
+
+            time.sleep(0.01)
 
     def _socket_client_loop(self):
         """
@@ -67,6 +200,9 @@ class CobotClient(Node):
                     s.connect((ROBOT_IP, PORT))
                     s.settimeout(2.0) # Timeout para recibir datos
                     
+                    with self._lock:
+                        self._active_sock = s
+
                     self.get_logger().info("¡Conexión establecida con el Robot!")
                     
                     # Bucle de lectura mientras la conexión esté viva
@@ -74,6 +210,9 @@ class CobotClient(Node):
                     
             except (ConnectionRefusedError, socket.timeout, OSError) as e:
                 self.get_logger().warn(f"No se pudo conectar o se perdió conexión: {e}")
+            finally:
+                with self._lock:
+                    self._active_sock = None
             
             # Leve pausa antes de reintentar
             self.get_logger().info("Reintentando en 2 segundos...")
@@ -100,9 +239,12 @@ class CobotClient(Node):
                     
                     parsed = self._parse_line(line)
                     if parsed is not None:
+                        angles, gripper_raw, traj_status = parsed
                         with self._lock:
-                            self._latest_data = parsed
+                            self._latest_data = (angles, gripper_raw)
                             self._latest_ts = time.time()
+                            if traj_status is not None:
+                                self._traj_status = traj_status
                             
             except socket.timeout:
                 # Si el robot no envía nada por un momento, seguir esperando
@@ -112,7 +254,7 @@ class CobotClient(Node):
                 break
 
     def _parse_line(self, line: str):
-        """Parsea el JSON recibido. Retorna (angles_list, gripper_float) o None."""
+        """Parsea el JSON recibido. Retorna (angles_list, gripper_float, traj_status) o None."""
         # Chequear que corresponda a JSON
         if not line.startswith('{'):
             return None
@@ -123,9 +265,10 @@ class CobotClient(Node):
             # Busca la key 'angles', 'angle' o 'joints'
             angles = payload.get("angles") or payload.get("angle") or payload.get("joints")
             gripper_raw = payload.get("gripper", 0.0)
+            traj_status = payload.get("traj_status", None)
 
             if isinstance(angles, list) and len(angles) == 6:
-                return (angles, gripper_raw)
+                return (angles, gripper_raw, traj_status)
         
         except json.JSONDecodeError:
             return None
@@ -149,7 +292,7 @@ class CobotClient(Node):
         # Apertura      URDF (radianes)
         #    0              -0.7
         #   100              0.3
-        griper_rad = (gripper_raw * 0.01) -0.7
+        griper_rad = (gripper_raw * 0.01) - 0.7
 
         # Unir con los valores del brazo
         angles_rad.append(griper_rad)
@@ -167,22 +310,23 @@ class CobotClient(Node):
 
 def gestionar_publicadores_locales(activar_al_salir: bool):
     """
-    Libera el tópico /joint_states tanto si está abierto demo.launch.py (MoveIt)
-    como si está abierto move.launch.py (RViz base).
+    Libera el tópico /joint_states y el servidor de acción /arm_controller/follow_joint_trajectory
+    tanto si está abierto demo.launch.py (MoveIt) como si está abierto move.launch.py (RViz base).
     """
     if not activar_al_salir:
-        print("[Bridge] Liberando el tópico /joint_states en la PC...")
+        print("[Bridge] Liberando el tópico /joint_states y /arm_controller simulados en la PC...")
         
-        # 1. Caso MoveIt (demo.launch.py): Desactivar joint_state_broadcaster
-        try:
-            subprocess.run(
-                ["ros2", "control", "switch_controllers", "--deactivate", "joint_state_broadcaster"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=2.5
-            )
-        except Exception:
-            pass
+        # 1. Caso MoveIt (demo.launch.py): Desactivar joint_state_broadcaster y arm_controller
+        for ctrl in ["joint_state_broadcaster", "arm_controller"]:
+            try:
+                subprocess.run(
+                    ["ros2", "control", "switch_controllers", "--deactivate", ctrl],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.5
+                )
+            except Exception:
+                pass
 
         # 2. Caso RViz base (move.launch.py): Cerrar joint_state_publisher si está activo
         try:
@@ -195,30 +339,38 @@ def gestionar_publicadores_locales(activar_al_salir: bool):
         except Exception:
             pass
     else:
-        print("\n[Bridge] Restaurando joint_state_broadcaster (si MoveIt está activo)...")
-        try:
-            subprocess.run(
-                ["ros2", "control", "switch_controllers", "--activate", "joint_state_broadcaster"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=2.5
-            )
-        except Exception:
-            pass
+        print("\n[Bridge] Restaurando joint_state_broadcaster y arm_controller (si MoveIt está activo)...")
+        for ctrl in ["joint_state_broadcaster", "arm_controller"]:
+            try:
+                subprocess.run(
+                    ["ros2", "control", "switch_controllers", "--activate", ctrl],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.5
+                )
+            except Exception:
+                pass
 
 def main(args=None):
     rclpy.init(args=args)
     
     # Al arrancar CobotClient, apaga los publicadores locales de MoveIt o RViz base
     gestionar_publicadores_locales(activar_al_salir=False)
-    
+
     node = CobotClient()
+
+    # IMPORTANTE: Usamos MultiThreadedExecutor.
+    # Esto permite que la función _publish_latest y execute_callback
+    # se ejecuten al mismo tiempo sin congelar RViz durante el movimiento.
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
-        # Al cerrar con Ctrl+C, vuelve a activar joint_state_broadcaster para MoveIt
+        # Al cerrar con Ctrl+C, vuelve a activar joint_state_broadcaster y arm_controller para MoveIt
         gestionar_publicadores_locales(activar_al_salir=True)
         node.destroy_node()
         rclpy.shutdown()

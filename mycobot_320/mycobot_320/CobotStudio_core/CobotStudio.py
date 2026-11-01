@@ -1316,60 +1316,6 @@ if ROS_OK or TYPE_CHECKING:
                 else:
                     print("Índice fuera de rango. Intente nuevamente.")
 
-        # def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
-        #     """
-        #     Implementación de `traj_moveit` en el robot virtual (ROS2).
-        #     Soporta tanto el formato nuevo pre-procesado (q_deg, speed, t_sec)
-        #     como formatos anteriores.
-        #     """
-        #     self.node_tf.add_robt(tool, 'tool', 'link6')
-        #     trajectory_points = self.load_data("Trayectorias", archivo, traj_name, verbose=True)
-
-        #     if not trajectory_points:
-        #         self.logger.error(f"No se pudo cargar la trayectoria {traj_name} de {archivo}")
-        #         return None
-
-        #     first_elem = trajectory_points[0]
-
-        #     # Caso 1: Formato nuevo sincronizado -> (q_deg, speed, t_sec)
-        #     if isinstance(first_elem, tuple) and len(first_elem) == 3:
-        #         q_rad_list = [np.deg2rad(pt[0][:6]) for pt in trajectory_points]
-        #         # Calcular dt promedio entre puntos para publicar en RViz al ritmo real
-        #         if len(trajectory_points) > 1:
-        #             dt = (trajectory_points[-1][2] - trajectory_points[0][2]) / (len(trajectory_points) - 1)
-        #         else:
-        #             dt = 0.05
-
-        #         traj_arm = np.asarray(q_rad_list)
-        #         self._check_limits(traj_arm, unit='rad')
-
-        #         q_full_now = self.get_current_q(prefer_gripper=True, timeout=0.5)
-        #         gripper_val = q_full_now[6] if q_full_now is not None else 0.0
-        #         gripper_col = np.full((traj_arm.shape[0], 1), gripper_val)
-        #         traj_full = np.c_[traj_arm, gripper_col]
-
-        #         self._send_move(traj_full, f'{traj_name}', 'Moveit', dt=dt)
-        #         last_q = q_rad_list[-1]
-
-        #     # Caso 2: Formato tupla anterior -> (q_rad, t_sec)
-        #     elif isinstance(first_elem, tuple) and len(first_elem) == 2:
-        #         q_rad_list = [np.asarray(pt[0][:6], dtype=float) for pt in trajectory_points]
-        #         self._execute_arm_trajectory(np.asarray(q_rad_list), f'{traj_name}', 'Moveit')
-        #         last_q = q_rad_list[-1]
-
-        #     # Caso 3: Lista simple de vectores q en radianes
-        #     else:
-        #         first_len = len(first_elem)
-        #         if first_len not in (6, 7):
-        #             raise ValueError(f"Dimensión inesperada en el primer punto: {first_len}")
-        #         if first_len == 7:
-        #             self._send_move(trajectory_points, f'{traj_name}', 'Moveit')
-        #         else:
-        #             self._execute_arm_trajectory(np.asarray(trajectory_points), f'{traj_name}', 'Moveit')
-        #         last_q = trajectory_points[-1][:6]
-
-        #     return RobTarget.from_q(last_q, tool)
-
 
         def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
             """
@@ -1458,7 +1404,8 @@ if ROS_OK or TYPE_CHECKING:
         def add_scene_object(self, name: str, pose_init: tuple, size: tuple, 
                          color: tuple = (0.5, 0.5, 0.5, 1.0),
                          shape: int = 1, movable: bool = True, 
-                         mesh: str = None, rot_euler: tuple = (0.0, 0.0, 0.0)):
+                         mesh: str = None, rot_euler: tuple = (0.0, 0.0, 0.0),
+                         touch_links: list = None):
             """
             Agrega un marker a la escena de simulación (RViz).
         
@@ -1483,11 +1430,19 @@ if ROS_OK or TYPE_CHECKING:
                   movable=False,
                   mesh="file:///home/user/colcon_ws/src/mycobot_ros2/mycobot_320/mycobot_320/scripts/Mate/Mate.STL", rot_euler=(np.pi/2, 0, -0.48))
             """
-            # Pasamos los argumentos explícitamente al nodo interno
+            # Visualización en RViz (MarkerManager)
             self.node_obj.add_object(
                 name=name, pose_init=pose_init, size=size, color=color,
                 shape=shape, movable=movable, mesh=mesh, rot_euler=rot_euler
             )
+            # Obstáculo de colisión en MoveIt si no es móvil
+            if not movable and self.moveit_manager is not None:
+                self.moveit_manager.add_collision_object(
+                    name=name, pose_init=pose_init, size=size, color=color,
+                    shape=shape, mesh=mesh, rot_euler=rot_euler,
+                    touch_links=touch_links
+                )
+                
 
         def load_scene(self, scene_filename: str, subfolder: str = ""):
             """

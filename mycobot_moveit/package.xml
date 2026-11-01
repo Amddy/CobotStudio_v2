@@ -14,7 +14,7 @@
   <url type="bugtracker">https://github.com/ros-planning/moveit2/issues</url>
   <url type="repository">https://github.com/ros-planning/moveit2</url>
 
-  <author email="emag.399@gmail.com">Ema Gonzalez</author>
+  <author email="azambranom@fi.uba.ar">Amddy Zambrano</author>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
@@ -44,6 +44,10 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>warehouse_ros_mongo</exec_depend>
   <exec_depend>xacro</exec_depend>
+
+  <exec_depend>openni2_camera</exec_depend>
+  <exec_depend>depth_image_proc</exec_depend>
+  <exec_depend>moveit_ros_perception</exec_depend>
 
 
   <export>
