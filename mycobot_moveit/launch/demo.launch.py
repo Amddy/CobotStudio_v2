@@ -52,6 +52,7 @@ def patch_and_launch(context, *args, **kwargs):
     except Exception as e:
         print(f"[Launch] Error crítico parcheando URDF: {e}")
 
+    
     # Construcción de MoveItConfigs incluyendo sensors_3d.yaml
     moveit_config = (
         MoveItConfigsBuilder("firefighter", package_name="mycobot_moveit")
@@ -59,21 +60,15 @@ def patch_and_launch(context, *args, **kwargs):
         .to_moveit_configs()
     )
 
-    # Inyectar parámetros globales del OctoMap en move_group
-    moveit_config.move_group_capabilities["capabilities"] = ""
-    moveit_config.trajectory_execution["octomap_frame"] = "base"
-    moveit_config.trajectory_execution["octomap_resolution"] = 0.025
-    moveit_config.trajectory_execution["max_range"] = 1.8
-
     return [generate_demo_launch(moveit_config)]
 
 
 def generate_launch_description():
 
     # Nodo encargado de cargar la mesa en RViz y en el Planning Scene de MoveIt
-    # Espera 5 segundos a que move_group inicie el servicio /apply_planning_scene
+    # Espera 10 segundos a que move_group inicie el servicio /apply_planning_scene
     mesa_scene_node = TimerAction(
-        period=15.0,
+        period=10.0,
         actions=[
             ExecuteProcess(
                 cmd=[
@@ -141,6 +136,25 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("use_camera"))
     )
 
+    # Filtro CropBox para recortar la nube al espacio de trabajo del MyCobot 320
+    cropbox_script = os.path.join(
+        get_package_share_directory("mycobot_moveit"), "launch", "cropbox_filter.py"
+    )
+    cropbox_node = ExecuteProcess(
+        cmd=[
+            "python3", cropbox_script,
+            "--ros-args",
+            "-p", "min_x:=-0.15",
+            "-p", "max_x:=0.20",
+            "-p", "min_y:=-0.50",
+            "-p", "max_y:=0.40",
+            "-p", "min_z:=0.10",
+            "-p", "max_z:=0.65",
+        ],
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("use_camera"))
+    )
+
     # Transformación estática (TF2) entre la 'base' del MyCobot y la cámara
     # Ajustar x, y, z (metros) y roll, pitch, yaw (radianes) según donde este la cámara
     camera_tf_node = Node(
@@ -148,12 +162,12 @@ def generate_launch_description():
         executable="static_transform_publisher",
         name="camera_base_tf_publisher",
         arguments=[
-            "--x", "0.59",
-            "--y", "-0.12",
-            "--z", "0.32",
+            "--x", "-0.630",
+            "--y", "-1.120",
+            "--z", "0.230",
             "--roll", "0.0",
-            "--pitch", "0.2",
-            "--yaw", "3.0 ",
+            "--pitch", "0.1222",
+            "--yaw", "1.0472 ",
             "--frame-id", "base",
             "--child-frame-id", LaunchConfiguration("camera_frame")
         ],
@@ -166,6 +180,7 @@ def generate_launch_description():
         camera_frame_arg,
         openni2_launch,
         point_cloud_xyzrgb_node,
+        cropbox_node,
         camera_tf_node,
         mesa_scene_node,
         OpaqueFunction(function=patch_and_launch)

@@ -1037,6 +1037,11 @@ if ROS_OK or TYPE_CHECKING:
             """
             if not (0 <= apertura <= 100):
                 raise ValueError("La apertura debe estar entre 0 y 100%.")
+
+            # Intentar vía Action Server (funciona en MoveIt simulado y con CobotClient real)
+            if self.moveit_manager is not None:
+                if self.moveit_manager.move_gripper(apertura, wait_for_result=True):
+                    return
             
             # Mapear al rango que interpreta ROS: -0.7 a 0.3
             val_gripper = apertura / 100 - 0.7

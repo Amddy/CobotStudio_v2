@@ -78,7 +78,7 @@ def obtener_q_actual(robot: BaseRobotController) -> np.ndarray:
     if robot.__class__.__name__ == "MyCobotController" and hasattr(robot, "mc"):
         try:
             q_deg = robot.mc.get_angles()
-            if q_deg is not None and len(q_deg) == 6:
+            if q_deg is not None and len(q_droboteg) == 6:
                 return np.deg2rad(np.array(q_deg, dtype=float))
         except Exception:
             pass
@@ -126,7 +126,7 @@ def guardar_metadata_en_archivo(nombre_archivo: str, metadata: dict, pose_objeti
 
 def run(robot: BaseRobotController, **kwargs):
     # Definir herramienta (TCP) y Workobject
-    tool = SE3(-1.71, 106.91, 28.33)
+    tool = SE3(-1.71381642, 106.90735789, 28.32702833)*SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
     wobj = SE3()
     archivo_traj = "reconfiguraciones"
 
@@ -134,7 +134,13 @@ def run(robot: BaseRobotController, **kwargs):
         robot.load_scene('mesa_scene')
 
     #  Definir la Pose Cartesiana objetivo usando SE3.OA para orientar el TCP fácilmente
-    pose_objetivo = SE3(250, -150, 300) * SE3.OA([0, 0, -1], [1, 0, 0])
+    # pose_objetivo = SE3(250, -150, 300) * SE3.OA([0, 0, -1], [1, 0, 0])
+    # pose_objetivo = SE3(150, -191, 260) * SE3.OA([0, 0, -1], [1, 0, 0])
+    # pose_objetivo = SE3(229, -17.6, 255) * SE3.OA([0, 0, -1], [1, 0, 0])
+    # pose_objetivo = SE3(220, -124, 454) * SE3.RPY([-33, -2, -118 ], unit='deg')
+    pose_objetivo = SE3(338.51, -35.45, 200.05) * SE3.RPY([-179.77, -1.45, 64.10], unit='deg')
+
+    # pose_objetivo = SE3(314, -163, 382)*SE3.RPY([-53, -8, -121], unit='deg')
     robt_base = RobTarget(pose_objetivo)
 
     # Mostrar la terna objetivo en RViz si estamos en ROS
@@ -174,7 +180,7 @@ def run(robot: BaseRobotController, **kwargs):
     # Leer estado inicial y abrir gráfico comparativo
     q_now = obtener_q_actual(robot)
     conf_actual = robot.cobot_tb.calc_conf(q_now)
-    graficar_comparativa_configuraciones(pose_objetivo, opciones, conf_actual)
+    # graficar_comparativa_configuraciones(pose_objetivo, opciones, conf_actual)
 
     #  Bucle interactivo
     ultimo_idx = 0

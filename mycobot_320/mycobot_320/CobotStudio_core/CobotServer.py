@@ -91,6 +91,44 @@ class CobotServer:
         else:
             self._pause_serial.clear()
 
+    def _execute_gripper(self, apertura: float, spd: int = 30):
+        """
+        Ejecuta el movimiento de la pinza física mediante la API pymycobot y actualiza el observer.
+
+        Pausa temporalmente el hilo de lectura periódica del puerto serie para evitar colisiones
+        de tramas en el bus RS-485 half-duplex mientras se envía la instrucción al gripper.
+
+        Args:
+            apertura (float): Porcentaje de apertura deseado (0.0 cerrado a 100.0 abierto).
+            spd (int, optional): Velocidad de movimiento de la pinza (1 a 100). Defaults to 30.
+        """
+        if self.mc is None:
+            print("[CobotServer] Error: Instancia 'mc' no disponible para mover el gripper.")
+            return
+
+        apertura_int = int(max(0, min(100, round(apertura))))
+        spd_int = int(max(1, min(100, round(spd))))
+        print(f"[CobotServer] Ejecutando Gripper físico -> Apertura: {apertura_int}% | Velocidad: {spd_int}")
+
+        # Pausar lectura periódica de get_angles() para no saturar ni bloquear el puerto serie
+        self.pause_serial_reading(True)
+        try:
+            self.mc.set_gripper_mode(0)
+            if apertura_int == 0:
+                self.mc.set_gripper_state(1, spd_int)
+            elif apertura_int == 100:
+                self.mc.set_gripper_state(0, spd_int)
+            else:
+                self.mc.set_gripper_value(apertura_int, spd_int, 1)
+
+            # Actualizar el estado interno para que se retransmita en el JSON hacia RViz
+            self.set_gripper_state(float(apertura_int))
+            time.sleep(0.15)
+        except Exception as e:
+            print(f"[CobotServer] Error ejecutando comando de gripper: {e}")
+        finally:
+            self.pause_serial_reading(False)
+
     def _serial_reader_loop(self):
         """
         Ciclo que consulta al robot y actualiza la memoria.
@@ -229,6 +267,14 @@ class CobotServer:
                         elif cmd == "RESET_STATUS":
                             with self._lock:
                                 self._latest["traj_status"] = "IDLE"
+                        elif cmd == "SET_GRIPPER":
+                            val = float(msg.get("value", 0.0))
+                            spd = int(msg.get("speed", 30))
+                            threading.Thread(
+                                target=self._execute_gripper,
+                                args=(val, spd),
+                                daemon=True
+                            ).start()
                     except json.JSONDecodeError:
                         pass
             except socket.timeout:

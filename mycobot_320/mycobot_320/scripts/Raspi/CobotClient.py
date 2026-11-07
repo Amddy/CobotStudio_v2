@@ -3,7 +3,11 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
 from rclpy.executors import MultiThreadedExecutor
-from control_msgs.action import FollowJointTrajectory
+from control_msgs.action import FollowJointTrajectory, GripperCommand
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Float32
+from std_srvs.srv import SetBool
+import tkinter as tk
 from sensor_msgs.msg import JointState
 import socket
 import threading
@@ -17,6 +21,7 @@ from scipy.interpolate import CubicSpline
 # IP de la Raspberry Pi (el servidor)
 ROBOT_IP = "192.168.88.10"
 PORT = 65432
+GRIPPER_SPEED = 30
 
 # Nombres de joints: deben coincidir con el URDF
 JOINT_NAMES = [
@@ -54,6 +59,18 @@ class CobotClient(Node):
             self.execute_callback
         )
 
+        # SERVIDOR DE ACCIÓN DE LA PINZA (ESCUCHA A MOVEIT Y RVIZ)
+        self._gripper_action_server = ActionServer(
+            self,
+            GripperCommand,
+            '/grip_action_controller/gripper_cmd',
+            self.execute_gripper_callback
+        )
+
+        # ATAJOS RÁPIDOS DE ROS 2 ( TÓPICO PORCENTUAL Y SERVICIO BINARIO ABRIR/CERRAR )
+        self.create_subscription(Float32, '/cobot/gripper_pct', self._gripper_pct_cb, 10)
+        self.create_service(SetBool, '/cobot/set_gripper', self._gripper_srv_cb)
+
         # Variables compartidas
         self._lock = threading.Lock()
         self._latest_angles_deg = None
@@ -85,6 +102,134 @@ class CobotClient(Node):
         except Exception as e:
             self.get_logger().error(f"Error enviando comando a la Raspberry Pi: {e}")
             return False
+
+    # -------------------------------------------------------------------------
+    # CONTROL DE PINZA (0 a 100%, Velocidad 30)
+    # -------------------------------------------------------------------------
+
+    def send_gripper_command(self, apertura_pct: float, speed: int = 30) -> bool:
+        """
+        Envía el comando de apertura de pinza al CobotServer en la Raspberry Pi.
+
+        Si no hay conexión TCP activa con el robot físico (modo solo simulador),
+        actualiza el estado local en memoria para que pueda probarse en RViz.
+
+        Args:
+            apertura_pct (float): Apertura deseada entre 0.0 (cerrado) y 100.0 (abierto).
+            speed (int, optional): Velocidad del movimiento (1-100). Defaults to 30.
+
+        Returns:
+            bool: True si se envió al servidor o se actualizó en simulación local.
+        """
+        val = max(0.0, min(100.0, float(apertura_pct)))
+        spd = max(1, min(100, int(speed)))
+
+        with self._lock:
+            connected = self._active_sock is not None
+
+        if connected:
+            self.get_logger().info(f"Enviando orden de pinza a Raspi: {val:.0f}% ( spd={spd} )")
+            return self._send_to_server({"cmd": "SET_GRIPPER", "value": val, "speed": spd})
+        else:
+            self.get_logger().warn(f"Sin conexión a Raspi. Simulando pinza al {val:.0f}% en RViz.")
+            with self._lock:
+                angles = self._latest_data[0] if self._latest_data is not None else [0.0] * 6
+                self._latest_data = (angles, val)
+            return True
+
+    def _gripper_pct_cb(self, msg: Float32):
+        """Callback del tópico '/cobot/gripper_pct' para control directo de 0 a 100%."""
+        self.send_gripper_command(msg.data, speed=30)
+
+    def _gripper_srv_cb(self, request: SetBool.Request, response: SetBool.Response):
+        """
+        Servicio estándar '/cobot/set_gripper' (std_srvs/srv/SetBool).
+        data=True -> Abre la pinza al 100%.
+        data=False -> Cierra la pinza al 0%.
+        """
+        target_pct = 100.0 if request.data else 0.0
+        ok = self.send_gripper_command(target_pct, speed=30)
+        response.success = ok
+        response.message = f"Pinza comandada al {target_pct:.0f}% (vel 30)"
+        return response
+
+    def send_gripper_command(self, apertura_pct: float, speed: int = 30) -> bool:
+        """
+        Envía el comando de apertura de pinza al CobotServer en la Raspberry Pi.
+
+        Si no hay conexión TCP activa con el robot físico (modo solo simulador),
+        actualiza el estado local en memoria para que pueda probarse en RViz.
+
+        Args:
+            apertura_pct (float): Apertura deseada entre 0.0 (cerrado) y 100.0 (abierto).
+            speed (int, optional): Velocidad del movimiento (1-100). Defaults to 30.
+
+        Returns:
+            bool: True si se envió al servidor o se actualizó en simulación local.
+        """
+        val = max(0.0, min(100.0, float(apertura_pct)))
+        spd = max(1, min(100, int(speed)))
+
+        with self._lock:
+            connected = self._active_sock is not None
+
+        if connected:
+            self.get_logger().info(f"Enviando orden de pinza a Raspi: {val:.0f}% ( spd={spd} )")
+            return self._send_to_server({"cmd": "SET_GRIPPER", "value": val, "speed": spd})
+        else:
+            self.get_logger().warn(f"Sin conexión a Raspi. Simulando pinza al {val:.0f}% en RViz.")
+            with self._lock:
+                angles = self._latest_data[0] if self._latest_data is not None else [0.0] * 6
+                self._latest_data = (angles, val)
+            return True
+
+    def _gripper_pct_cb(self, msg: Float32):
+        """Callback del tópico '/cobot/gripper_pct' para control directo de 0 a 100%."""
+        self.send_gripper_command(msg.data, speed=30)
+
+    def _gripper_srv_cb(self, request: SetBool.Request, response: SetBool.Response):
+        """
+        Servicio estándar '/cobot/set_gripper' (std_srvs/srv/SetBool).
+        data=True -> Abre la pinza al 100%.
+        data=False -> Cierra la pinza al 0%.
+        """
+        target_pct = 100.0 if request.data else 0.0
+        ok = self.send_gripper_command(target_pct, speed=30)
+        response.success = ok
+        response.message = f"Pinza comandada al {target_pct:.0f}% (vel 30)"
+        return response
+
+    def execute_gripper_callback(self, goal_handle):
+        """
+        Callback del ActionServer '/grip_action_controller/gripper_cmd'.
+        Recibe la posición en radianes desde MoveIt/RViz (-0.7 a 0.3 rad),
+        la convierte a escala porcentual (0 a 100%) y la ejecuta en el cobot real.
+        """
+        pos_rad = float(goal_handle.request.command.position)
+        # Mapeo inverso al de _publish_latest: (-0.7 rad -> 0%, 0.3 rad -> 100%)
+        apertura_pct = max(0.0, min(100.0, (pos_rad + 0.7) * 100.0))
+
+        self.get_logger().info(
+            f"¡Acción de pinza recibida de MoveIt! ({pos_rad:.3f} rad -> {apertura_pct:.0f}%)"
+        )
+
+        ok = self.send_gripper_command(apertura_pct, speed=30)
+        result = GripperCommand.Result()
+
+        if not ok:
+            goal_handle.abort()
+            return result
+
+        # Tiempo de asentamiento mecánico para que la pinza física complete el recorrido
+        time.sleep(0.5)
+        result.position = pos_rad
+        result.reached_goal = True
+        goal_handle.succeed()
+        return result
+
+    # -------------------------------------------------------------------------
+    # CONTROL DE TRAYECTORIAS DEL BRAZO (MoveIt -> Raspberry Pi)
+    # ------------------------------------------------------------------------
 
     def _interpolate_trajectory(self, points, idx_map, freq_hz: float = 25.0, max_servo_deg_s: float = 140.0):
         """
@@ -185,6 +330,11 @@ class CobotClient(Node):
                 return result
 
             time.sleep(0.01)
+
+
+    # -------------------------------------------------------------------------
+    # RECEPCIÓN TCP Y PUBLICACIÓN EN /joint_states
+    # -------------------------------------------------------------------------
 
     def _socket_client_loop(self):
         """
@@ -317,7 +467,7 @@ def gestionar_publicadores_locales(activar_al_salir: bool):
         print("[Bridge] Liberando el tópico /joint_states y /arm_controller simulados en la PC...")
         
         # 1. Caso MoveIt (demo.launch.py): Desactivar joint_state_broadcaster y arm_controller
-        for ctrl in ["joint_state_broadcaster", "arm_controller"]:
+        for ctrl in ["joint_state_broadcaster", "arm_controller","grip_action_controller"]:
             try:
                 subprocess.run(
                     ["ros2", "control", "switch_controllers", "--deactivate", ctrl],
@@ -340,7 +490,7 @@ def gestionar_publicadores_locales(activar_al_salir: bool):
             pass
     else:
         print("\n[Bridge] Restaurando joint_state_broadcaster y arm_controller (si MoveIt está activo)...")
-        for ctrl in ["joint_state_broadcaster", "arm_controller"]:
+        for ctrl in ["joint_state_broadcaster", "arm_controller","grip_action_controller"]:
             try:
                 subprocess.run(
                     ["ros2", "control", "switch_controllers", "--activate", ctrl],
@@ -351,22 +501,72 @@ def gestionar_publicadores_locales(activar_al_salir: bool):
             except Exception:
                 pass
 
+def bucle_teclado_pinza(client_node: CobotClient):
+    """
+    Atajo interactivo por consola para abrir/cerrar la pinza en tiempo real
+    mientras se planifican movimientos del brazo en RViz2.
+
+    Comandos admitidos:
+    - 'o' / 'a' + ENTER -> Abre la pinza completamente (100%) a velocidad 30.
+    - 'c'       + ENTER -> Cierra la pinza completamente (0%) a velocidad 30.
+    - '0'..'100'+ ENTER -> Mueve la pinza al porcentaje indicado a velocidad 30.
+    - 'q'       + ENTER -> Cierra CobotClient de forma limpia.
+    """
+    print("\n" + "=" * 62)
+    print(" ATAJO DE PINZA ACTIVO (Velocidad fija: 30)")
+    print("  [o / a] + ENTER -> ABRIR pinza del todo (100%)")
+    print("  [c]     + ENTER -> CERRAR pinza del todo (0%)")
+    print("  [0-100] + ENTER -> Apertura parcial (ej: 50)")
+    print("  [q]     + ENTER -> Salir y restaurar controladores")
+    print("=" * 62 + "\n")
+
+    while rclpy.ok():
+        try:
+            cmd = input().strip().lower()
+            if not cmd:
+                continue
+            if cmd in ('o', 'a', 'open', 'abrir'):
+                client_node.send_gripper_command(100.0, speed=GRIPPER_SPEED)
+            elif cmd in ('c', 'close', 'cerrar'):
+                client_node.send_gripper_command(0.0, speed=GRIPPER_SPEED)
+            elif cmd in ('q', 'quit', 'exit', 'salir'):
+                print("Saliendo de CobotClient...")
+                break
+            else:
+                try:
+                    val = float(cmd)
+                    if 0.0 <= val <= 100.0:
+                        client_node.send_gripper_command(val, speed=GRIPPER_SPEED)
+                    else:
+                        print("[!] Ingresa un valor entre 0 y 100, 'o' (abrir) o 'c' (cerrar).")
+                except ValueError:
+                    print("[!] Comando no reconocido. Usa 'o' (100%), 'c' (0%), un número 0-100 o 'q'.")
+        except EOFError:
+            # Si se ejecuta en segundo plano sin stdin interactivo, mantener vivo el proceso
+            while rclpy.ok():
+                time.sleep(0.5)
+            break
+
+    
+
 def main(args=None):
     rclpy.init(args=args)
     
     # Al arrancar CobotClient, apaga los publicadores locales de MoveIt o RViz base
     gestionar_publicadores_locales(activar_al_salir=False)
-
+    
     node = CobotClient()
 
-    # IMPORTANTE: Usamos MultiThreadedExecutor.
-    # Esto permite que la función _publish_latest y execute_callback
-    # se ejecuten al mismo tiempo sin congelar RViz durante el movimiento.
+    # Ejecutamos MultiThreadedExecutor en un hilo daemon para que ROS 2 procese
+    # /joint_states y ActionServers en paralelo con la lectura de teclado
     executor = MultiThreadedExecutor()
     executor.add_node(node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+    
     
     try:
-        executor.spin()
+        bucle_teclado_pinza(node)
     except KeyboardInterrupt:
         pass
     finally:
@@ -374,6 +574,7 @@ def main(args=None):
         gestionar_publicadores_locales(activar_al_salir=True)
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

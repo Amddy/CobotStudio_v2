@@ -68,3 +68,9 @@ joint_limits:
     max_velocity: 1.0
     has_acceleration_limits: true
     max_acceleration: 1.0
+
+  cartesian_limits:
+    max_trans_vel: 0.25
+    max_trans_acc: 0.50
+    max_trans_dec: -0.50
+    max_rot_vel: 1.57

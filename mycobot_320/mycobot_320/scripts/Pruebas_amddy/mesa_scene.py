@@ -14,7 +14,7 @@ def setup_scene(robot: ROSManager):
 
     robot.add_scene_object(
         name="mesa",
-        pose_init=(0.546, -0.257, 0.0),
+        pose_init=(0.546, -0.257, -0.072),
         size=(1.0e-3, 1.0e-3, 1.0e-3),  # escala en metros
         color=(128/255, 81/255, 46/255, 1.0),
         shape=Shapes.MESH,

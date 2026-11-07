@@ -5,7 +5,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import Command, LaunchConfiguration
 
@@ -38,6 +38,9 @@ def generate_launch_description():
         )
     )
     res.append(rvizconfig_launch_arg)
+
+
+
 
     # gui_launch_arg = DeclareLaunchArgument(
     #     name="gui",
@@ -92,5 +95,23 @@ def generate_launch_description():
         arguments=['-d', LaunchConfiguration("rvizconfig")],
     )
     res.append(rviz_node)
+
+
+    # mesa_scene_node = TimerAction(
+    #     period=3.0,
+    #     actions=[
+    #         ExecuteProcess(
+    #             cmd=[
+    #                 "python3",
+    #                 "CobotLauncher.py",
+    #                 "scripts/Pruebas_amddy/mesa_scene.py",
+    #                 "ros"
+    #             ],
+    #             cwd="/home/amddy/CobotStudio/mycobot_320/mycobot_320",
+    #             output="screen"
+    #         )
+    #     ]
+    # )
+    # res.append(mesa_scene_node)
 
     return LaunchDescription(res)

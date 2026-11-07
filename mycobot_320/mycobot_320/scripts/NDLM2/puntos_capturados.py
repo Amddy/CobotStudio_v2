@@ -1,0 +1,22 @@
+from Cobot_sdk import *
+
+# Puntos capturados desde monitor_tcp.py
+Robt_pos1 = RobTarget(SE3(338.51, -35.45, 200.05) * SE3.RPY([-179.77, -1.45, 64.10], unit='deg'), [-1, 1, -1])
+Robt_pos2 = RobTarget(SE3(289.78, -135.80, 197.21) * SE3.RPY([-179.76, -1.44, 64.11], unit='deg'), [-1, 1, -1])
+Robt_pos3 = RobTarget(SE3(289.78, -135.80, 197.21) * SE3.RPY([-179.76, -1.44, 64.11], unit='deg'), [-1, 1, -1])
+Robt_pos4 = RobTarget(SE3(307.81, -150.79, 392.58) * SE3.RPY([-61.64, -0.50, -119.64], unit='deg'), [-1, -1, -1])
+Robt_pos1 = RobTarget(SE3(1.72, -182.55, 416.90) * SE3.RPY([180.00, -0.00, 0.01], unit='deg'), [-1, 1, 1])
+Robt_pos2 = RobTarget(SE3(1.72, -182.55, 416.90) * SE3.RPY([180.00, -0.00, 0.01], unit='deg'), [-1, 1, 1])
+Robt_pos3 = RobTarget(SE3(243.01, -119.45, 515.48) * SE3.RPY([52.86, 2.41, 52.64], unit='deg'), [1, 1, -1])
+Robt_pos4 = RobTarget(SE3(268.35, -145.33, 390.71) * SE3.RPY([124.79, 2.42, 52.65], unit='deg'), [1, 1, -1])
+Robt_pos1 = RobTarget(SE3(205.52, -156.04, 387.39) * SE3.RPY([151.19, -0.01, 58.25], unit='deg'), [1, -1, 1])
+Robt_pos2 = RobTarget(SE3(141.52, -116.41, 356.81) * SE3.RPY([-165.70, -0.01, 58.26], unit='deg'), [1, -1, 1])
+Robt_pos1 = RobTarget(SE3(227.27, -219.77, 199.88) * SE3.RPY([-179.21, -0.00, 64.19], unit='deg'), [1, -1, 1])
+Robt_pos1 = RobTarget(SE3(172.27, -273.27, 186.64) * SE3.RPY([-179.99, -0.01, 57.94], unit='deg'), [-1, 1, -1])
+Robt_pos2 = RobTarget(SE3(172.27, -273.27, 186.64) * SE3.RPY([-179.99, -0.01, 57.94], unit='deg'), [-1, 1, -1])
+Robt_pos3 = RobTarget(SE3(172.27, -273.27, 186.64) * SE3.RPY([-179.99, -0.01, 57.94], unit='deg'), [-1, 1, -1])
+Robt_pos4 = RobTarget(SE3(294.72, 38.69, 208.48) * SE3.RPY([-180.00, 0.01, 57.21], unit='deg'), [1, -1, 1])
+Robt_pos5 = RobTarget(SE3(86.18, -258.56, 215.00) * SE3.RPY([-180.00, 0.00, 57.21], unit='deg'), [-1, 1, -1])
+Robt_pos6 = RobTarget(SE3(-127.65, -322.58, 211.23) * SE3.RPY([-177.61, -0.86, -6.27], unit='deg'), [-1, 1, -1])
+Robt_pos7 = RobTarget(SE3(135.95, -292.23, 200.18) * SE3.RPY([179.32, -2.93, 59.39], unit='deg'), [1, -1, 1])
+Robt_pos8 = RobTarget(SE3(325.31, 27.88, 219.26) * SE3.RPY([179.32, -2.95, 59.39], unit='deg'), [1, -1, 1])

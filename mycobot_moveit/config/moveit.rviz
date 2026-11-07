@@ -4,8 +4,8 @@ Panels:
     Name: Displays
     Property Tree Widget:
       Expanded:
-        - /MotionPlanning1
         - /TF1/Frames1
+        - /PointCloud21
         - /PointCloud21/Topic1
       Splitter Ratio: 0.5
     Tree Height: 290
@@ -37,7 +37,7 @@ Visualization Manager:
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
       Value: true
-    - Acceleration_Scaling_Factor: 0.7
+    - Acceleration_Scaling_Factor: 0.7999999999999999
       Class: moveit_rviz_plugin/MotionPlanning
       Enabled: true
       Move Group Namespace: ""
@@ -278,17 +278,31 @@ Visualization Manager:
         Show Robot Collision: false
         Show Robot Visual: true
       Value: true
-      Velocity_Scaling_Factor: 0.7
+      Velocity_Scaling_Factor: 0.7999999999999999
     - Class: rviz_default_plugins/TF
       Enabled: true
       Frame Timeout: 15
       Frames:
         All Enabled: false
+        MoveJ_robt:
+          Value: true
+        MoveJ_wobj:
+          Value: true
         base:
           Value: false
         base_flange:
           Value: true
         base_mesa:
+          Value: true
+        camera_depth_frame:
+          Value: true
+        camera_depth_optical_frame:
+          Value: true
+        camera_link:
+          Value: true
+        camera_rgb_frame:
+          Value: true
+        camera_rgb_optical_frame:
           Value: true
         gripper_base:
           Value: false
@@ -316,6 +330,8 @@ Visualization Manager:
           Value: false
         link6:
           Value: false
+        tool:
+          Value: true
         world:
           Value: false
       Marker Scale: 0.5
@@ -326,9 +342,19 @@ Visualization Manager:
       Tree:
         world:
           base:
+            MoveJ_wobj:
+              MoveJ_robt:
+                {}
             base_flange:
               base_mesa:
                 {}
+            camera_link:
+              camera_depth_frame:
+                camera_depth_optical_frame:
+                  {}
+              camera_rgb_frame:
+                camera_rgb_optical_frame:
+                  {}
             link1:
               link2:
                 link3:
@@ -346,13 +372,15 @@ Visualization Manager:
                           gripper_right3:
                             gripper_right1:
                               {}
+                        tool:
+                          {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        objects: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -390,7 +418,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /point_cloud/points
+        Value: /cropped_points
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
@@ -412,25 +440,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.016056537628174
+      Distance: 1.916447639465332
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.0796772912144661
-        Y: -0.09051188826560974
-        Z: 0.041190676391124725
+        X: 0.14962095022201538
+        Y: -0.1764838993549347
+        Z: 0.2231556922197342
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.9047970175743103
+      Pitch: 0.21479688584804535
       Target Frame: base
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.931698799133301
+      Yaw: 4.681680679321289
     Saved: ~
 Window Geometry:
   Displays:

@@ -1,0 +1,64 @@
+planning_plugin: ompl_interface/OMPLPlanner
+request_adapters: >-
+  default_planner_request_adapters/AddTimeOptimalParameterization
+  default_planner_request_adapters/ResolveConstraintFrames
+  default_planner_request_adapters/FixWorkspaceBounds
+  default_planner_request_adapters/FixStartStateBounds
+  default_planner_request_adapters/FixStartStateCollision
+  default_planner_request_adapters/FixStartStatePathConstraints
+start_state_max_bounds_error: 0.1
+
+path_tolerance: 0.05
+resample_dt: 0.05
+min_angle_change: 0.001
+
+planner_configs:
+  RRTConnectkConfigDefault:
+    type: geometric::RRTConnect
+    range: 0.20
+  RRTstarkConfigDefault:
+    type: geometric::RRTstar
+    range: 0.20
+    goal_bias: 0.05
+    delay_collision_checking: 1
+  BFMTkConfigDefault:
+    type: geometric::BFMT
+    num_samples: 1000
+    radius_multiplier: 1.0
+    balanced: 0
+    optimality: 1
+    heuristics: 1
+    cache_cc: 1
+    extended_fmt: 1
+  LBKPIECEkConfigDefault:
+    type: geometric::LBKPIECE
+    range: 0.20
+    border_fraction: 0.9
+    min_valid_path_fraction: 0.5
+  BiTRRTkConfigDefault:
+    type: geometric::BiTRRT
+    range: 0.0
+
+arm:
+  default_planner_config: RRTConnectkConfigDefault
+  planner_configs:
+    - RRTConnectkConfigDefault
+    - RRTstarkConfigDefault
+    - BFMTkConfigDefault
+    - LBKPIECEkConfigDefault
+    - BiTRRTkConfigDefault
+  projection_evaluator: joints(joint2_to_joint1,joint3_to_joint2)
+  longest_valid_segment_fraction: 0.005
+
+arm_with_gripper:
+  default_planner_config: RRTConnectkConfigDefault
+  planner_configs:
+    - RRTConnectkConfigDefault
+    - RRTstarkConfigDefault
+    - BFMTkConfigDefault
+    - LBKPIECEkConfigDefault
+    - BiTRRTkConfigDefault
+  projection_evaluator: joints(joint2_to_joint1,joint3_to_joint2)
+  longest_valid_segment_fraction: 0.005
+
+

@@ -168,7 +168,10 @@ class MoveItManager(Node):
             return False
 
     def plan_and_execute(self, target, start=None, tool=SE3(), wobj=SE3(), execute=False,
-                         update_rviz: bool = True, timeout: float = 5.0):
+                         update_rviz: bool = True, timeout: float = 5.0, 
+                         vel_scale: float = 0.3, acc_scale: float = 0.3,
+                         pipeline_id: str = "ompl",
+                         planner_id: str = "RRTConnectkConfigDefault"):
         """
         Orquesta la planificación y ejecución de movimiento.
 
@@ -200,8 +203,10 @@ class MoveItManager(Node):
             self.get_logger().error("plan_and_execute: target inválido o IK falló.")
             return None
         
-
-        traj_msg, q_list = self._plan_joint_trajectory(q_goal_list, q_start=q_start_list, timeout=timeout)
+        traj_msg, q_list = self._plan_joint_trajectory(
+            q_goal_list, q_start=q_start_list, vel_scale=vel_scale, acc_scale=acc_scale,
+            timeout=timeout, pipeline_id=pipeline_id, planner_id=planner_id
+        )
         
         if q_list is None:
             return None
@@ -420,7 +425,10 @@ class MoveItManager(Node):
         with self._lock:
             self._last_display_trajectory = None
    
-    def _plan_joint_trajectory(self, q_goal, q_start=None, group_name=None, timeout=5.0):
+    def _plan_joint_trajectory(self, q_goal, q_start=None, group_name=None, timeout=5.0,
+                               vel_scale: float = 0.6 , acc_scale: float = 0.6,
+                               pipeline_id: str = "ompl",
+                               planner_id: str = "RRTConnectkConfigDefault"):
         """
         Planea una trayectoria con el plugin MotionPlanning de MoveIt. No la ejecuta por lo que la posición del robot no cambia.
         Devuelve (traj_msg, q_list) o (None, None) en caso de error.
@@ -457,6 +465,12 @@ class MoveItManager(Node):
         req = GetMotionPlan.Request()
         mp = MotionPlanRequest()
         mp.group_name = group_name
+        mp.pipeline_id = pipeline_id
+        mp.planner_id = planner_id
+        mp.num_planning_attempts = 5
+        mp.allowed_planning_time = float(timeout)
+        mp.max_velocity_scaling_factor = float(np.clip(vel_scale, 0.01, 1.0))
+        mp.max_acceleration_scaling_factor = float(np.clip(acc_scale, 0.01, 1.0))
 
         start_js = JointState()
         start_js.name = joint_names_used
@@ -720,6 +734,7 @@ class MoveItManager(Node):
 
         return arm_ok and gripper_ok
 
+
     def _init_collision_service(self, timeout=3.0):
         """
         Inicializa el cliente de GetStateValidity si aún no existe.
@@ -771,7 +786,7 @@ class MoveItManager(Node):
         req.robot_state = rs
 
         # Llamada al servicio asíncrona
-        future = self._collision_client.call_async(req)
+        future = self._collision_client.call_async(req) 
 
         # 4. Espera manual (thread-safe)
         start_t = time.time()
@@ -1034,4 +1049,48 @@ class MoveItManager(Node):
         else:
             self.get_logger().error(f"Fallo al agregar obstáculo '{name}' a MoveIt.")
             return False
+
+
+
+    def move_gripper(self, apertura_pct: float, wait_for_result: bool = True,
+                     gripper_action_name: str = '/grip_action_controller/gripper_cmd') -> bool:
+        """
+        Envía un comando de apertura/cierre al servidor de acción de la pinza (GripperCommand).
+
+        Permite que la función GripperState() del SDK opere de manera transparente tanto
+        contra el controlador virtual de MoveIt (FakeSystem) como contra CobotClient (Robot Real).
+
+        Args:
+            apertura_pct (float): Apertura deseada de 0.0 (cerrado) a 100.0 (abierto).
+            wait_for_result (bool, optional): Si es True, bloquea hasta completar la acción.
+            gripper_action_name (str, optional): Nombre del servidor de acción de la pinza.
+
+        Returns:
+            bool: True si el servidor de acción aceptó y ejecutó el comando.
+        """
+        val_rad = (float(apertura_pct) * 0.01) - 0.7
+
+        if not hasattr(self, "_gripper_action_client") or self._gripper_action_client is None:
+            self._gripper_action_client = ActionClient(self, GripperCommand, gripper_action_name)
+
+        if not self._gripper_action_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().warn(f"Servidor de pinza {gripper_action_name} no disponible.")
+            return False
+
+        goal_msg = GripperCommand.Goal()
+        goal_msg.command.position = val_rad
+        goal_msg.command.max_effort = 0.0
+
+        send_future = self._gripper_action_client.send_goal_async(goal_msg)
+        goal_handle = self._wait_for_future(send_future, timeout_sec=3.0)
+
+        if not goal_handle or not goal_handle.accepted:
+            self.get_logger().error("Goal de pinza rechazado por el Action Server.")
+            return False
+
+        if wait_for_result:
+            res_future = goal_handle.get_result_async()
+            self._wait_for_future(res_future, timeout_sec=5.0)
+
+        return True
               
