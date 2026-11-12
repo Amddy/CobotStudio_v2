@@ -157,6 +157,8 @@ class CobotServer:
 
         # Pausar lectura periódica de get_angles() para acceso exclusivo al bus RS-485
         self.pause_serial_reading(True)
+        time.sleep(0.05)
+
         try:
             self.mc.set_gripper_mode(0)
             if apertura_int == 0:

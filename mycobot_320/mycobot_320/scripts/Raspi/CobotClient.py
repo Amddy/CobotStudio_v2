@@ -7,7 +7,6 @@ from control_msgs.action import FollowJointTrajectory, GripperCommand
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32
 from std_srvs.srv import SetBool
-from sensor_msgs.msg import JointState
 import socket
 import threading
 import time
@@ -106,52 +105,6 @@ class CobotClient(Node):
     # -------------------------------------------------------------------------
     # CONTROL DE PINZA (0 a 100%, Velocidad 30)
     # -------------------------------------------------------------------------
-
-    def send_gripper_command(self, apertura_pct: float, speed: int = 30) -> bool:
-        """
-        Envía el comando de apertura de pinza al CobotServer en la Raspberry Pi.
-
-        Si no hay conexión TCP activa con el robot físico (modo solo simulador),
-        actualiza el estado local en memoria para que pueda probarse en RViz.
-
-        Args:
-            apertura_pct (float): Apertura deseada entre 0.0 (cerrado) y 100.0 (abierto).
-            speed (int, optional): Velocidad del movimiento (1-100). Defaults to 30.
-
-        Returns:
-            bool: True si se envió al servidor o se actualizó en simulación local.
-        """
-        val = max(0.0, min(100.0, float(apertura_pct)))
-        spd = max(1, min(100, int(speed)))
-
-        with self._lock:
-            connected = self._active_sock is not None
-
-        if connected:
-            self.get_logger().info(f"Enviando orden de pinza a Raspi: {val:.0f}% ( spd={spd} )")
-            return self._send_to_server({"cmd": "SET_GRIPPER", "value": val, "speed": spd})
-        else:
-            self.get_logger().warn(f"Sin conexión a Raspi. Simulando pinza al {val:.0f}% en RViz.")
-            with self._lock:
-                angles = self._latest_data[0] if self._latest_data is not None else [0.0] * 6
-                self._latest_data = (angles, val)
-            return True
-
-    def _gripper_pct_cb(self, msg: Float32):
-        """Callback del tópico '/cobot/gripper_pct' para control directo de 0 a 100%."""
-        self.send_gripper_command(msg.data, speed=30)
-
-    def _gripper_srv_cb(self, request: SetBool.Request, response: SetBool.Response):
-        """
-        Servicio estándar '/cobot/set_gripper' (std_srvs/srv/SetBool).
-        data=True -> Abre la pinza al 100%.
-        data=False -> Cierra la pinza al 0%.
-        """
-        target_pct = 100.0 if request.data else 0.0
-        ok = self.send_gripper_command(target_pct, speed=30)
-        response.success = ok
-        response.message = f"Pinza comandada al {target_pct:.0f}% (vel 30)"
-        return response
 
     def send_gripper_command(self, apertura_pct: float, speed: int = 30) -> bool:
         """

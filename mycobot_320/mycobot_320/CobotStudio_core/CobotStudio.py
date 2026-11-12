@@ -2079,7 +2079,7 @@ class MyCobotController(BaseRobotController):
             t_planificado = waypoints[-1][2]
 
             # 4. Dejar que el robot termine de asentarse suavemente SIN re-disparar send_angles en modo 0
-            time.sleep(0.35)
+            time.sleep(1)
             self.mc.set_fresh_mode(0)
             time.sleep(0.05)
 

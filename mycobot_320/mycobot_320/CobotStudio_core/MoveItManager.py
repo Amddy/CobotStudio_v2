@@ -249,7 +249,6 @@ class MoveItManager(Node):
         """
         Re-muestrea la última trayectoria planificada (por código o desde RViz) mediante CubicSpline
         a frecuencia constante (25 Hz) y traduce el perfil de velocidades al comando escalar speed (1..100)
-        con cola de asentamiento anti-caída en los últimos 3 puntos.
         """
         # 1. Obtener la última trayectoria planificada (por código o por panel de RViz)
         with self._lock:
