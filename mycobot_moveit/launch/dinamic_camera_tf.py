@@ -29,9 +29,9 @@ class DynamicCameraTF(Node):
 
         self.declare_parameter("frame_id", "base")
         self.declare_parameter("child_frame_id", "camera_link")
-        self.declare_parameter("x", 0.60, pos_desc)
-        self.declare_parameter("y", 0.00, pos_desc)
-        self.declare_parameter("z", 0.35, pos_desc)
+        self.declare_parameter("x", 0.630, pos_desc)
+        self.declare_parameter("y", -1.120, pos_desc)
+        self.declare_parameter("z", 0.230, pos_desc)
         self.declare_parameter("roll_deg", 0.0, ang_desc)
         self.declare_parameter("pitch_deg", 0.0, ang_desc)
         self.declare_parameter("yaw_deg", 180.0, ang_desc)

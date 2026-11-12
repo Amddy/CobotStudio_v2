@@ -119,7 +119,7 @@ def run(robot: BaseRobotController, speed=30, **kwargs):
         punto1 = RobTarget(T_global * SE3(324, -30, 90) * SE3.Ry(-np.pi) * SE3.Rz(np.pi/2 + np.pi/7.5), [1, 1, 1])
         punto2 = RobTarget(T_global * SE3(223, -225, 90) * SE3.Ry(-np.pi) * SE3.Rz(np.pi/2 + np.pi/7.5), [1, 1, 1])
         punto3 = RobTarget(T_global * SE3(270, -130, 90) * SE3.Ry(-np.pi) * SE3.Rz(np.pi/2 + np.pi/7.5), [1, 1, 1])
-        robot.MoveJ(punto1, 50, pinza, SE3())
+        robot.MoveJ(punto1, 50, pinza, SE3()    )
         robot.MoveJ(punto2, 30, pinza, SE3())
         robot.MoveJ(punto3, 30, pinza, SE3())
 

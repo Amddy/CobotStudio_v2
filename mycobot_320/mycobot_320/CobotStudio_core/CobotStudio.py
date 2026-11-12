@@ -70,6 +70,7 @@ class BaseRobotController(ABC):
 
         # Modelo del robot en roboticstoolbox
         self.cobot_tb = myCobot320(rotar_base=True, metros=False)
+        RobTarget.set_default_model(self.cobot_tb)
 
         # Límites de los ejes
         self.joint_limits = {
@@ -1322,90 +1323,68 @@ if ROS_OK or TYPE_CHECKING:
                     print("Índice fuera de rango. Intente nuevamente.")
 
 
-        def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
+        def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool=None, factor_tiempo: float = 1.0):
             """
-            Implementación de `traj_moveit` en el robot virtual (ROS2).
-            Reproduce la trayectoria en RViz de forma fluida sin colisionar con ros2_control.
+            Reproduce en RViz (modo simulación ROS) una trayectoria exportada desde MoveIt,
+            respetando los tiempos de muestreo mediante reloj monotónico.
+            Soporta tanto tuplas (q, spd, t_sec) como (q, t_sec) en radianes o grados.
             """
-            self.node_tf.add_robt(tool, 'tool', 'link6')
-            trajectory_points = self.load_data("Trayectorias", archivo, traj_name, verbose=True)
+            if tool is None:
+                tool = SE3()
 
-            if not trajectory_points:
-                self.logger.error(f"No se pudo cargar la trayectoria {traj_name} de {archivo}")
-                return None
+            traj_data = self.load_data("Trayectorias", archivo, traj_name)
+            if not traj_data:
+                raise ValueError(f"La trayectoria '{traj_name}' en '{archivo}' está vacía.")
 
-            first_elem = trajectory_points[0]
+            # Detectar si los ángulos del archivo están en radianes o en grados
+            sample_q = np.asarray(traj_data[0][0] if isinstance(traj_data[0], (tuple, list)) and len(traj_data[0]) in (2, 3) and isinstance(traj_data[0][0], (list, tuple, np.ndarray)) else traj_data[0], dtype=float)[:6]
+            # Si algún ángulo supera 2*pi (6.283 rad), el archivo está en grados; si no, en radianes
+            all_q_max = max(
+                float(np.max(np.abs(np.asarray(item[0] if (isinstance(item, (tuple, list)) and len(item) in (2, 3) and isinstance(item[0], (list, tuple, np.ndarray))) else item, dtype=float)[:6])))
+                for item in traj_data
+            )
+            is_degrees = (all_q_max > (2.0 * np.pi + 0.05))
 
-            # 1. Extraer lista de posiciones (en radianes) y tiempos (t_sec)
-            if isinstance(first_elem, tuple) and len(first_elem) == 3:
-                # Formato nuevo: (q_deg, speed, t_sec)
-                q_rad_list = [np.deg2rad(pt[0][:6]).tolist() for pt in trajectory_points]
-                t_sec_list = [float(pt[2]) for pt in trajectory_points]
-            elif isinstance(first_elem, tuple) and len(first_elem) == 2:
-                # Formato tupla intermedio: (q_rad, t_sec)
-                q_rad_list = [list(pt[0][:6]) for pt in trajectory_points]
-                t_sec_list = [float(pt[1]) for pt in trajectory_points]
-            else:
-                # Formato lista simple de vectores q en radianes
-                q_rad_list = [list(pt[:6]) for pt in trajectory_points]
-                t_sec_list = [i * 0.05 for i in range(len(q_rad_list))]
-
-            self._check_limits(np.asarray(q_rad_list), unit='rad')
-
-            # 2. Llevar el robot suavemente al primer punto (t=0) si no está ahí, igual que en el robot real
-            q_now = self.get_current_q(prefer_gripper=False, timeout=0.5)
-            if q_now is not None and not np.allclose(q_now[:6], q_rad_list[0], atol=0.02):
-                self.logger.info("Moviendo robot virtual al punto inicial de la trayectoria...")
-                if self.moveit_manager is not None:
-                    self.moveit_manager.plan_and_execute(q_rad_list[0], execute=True, update_rviz=False)
+            prepared_points = []
+            dt_fallback = 0.04
+            for idx, item in enumerate(traj_data):
+                if isinstance(item, (tuple, list)) and len(item) == 3 and isinstance(item[0], (list, tuple, np.ndarray)):
+                    pt_raw, spd_val, t_sec = item
+                    t_target = float(t_sec) * float(factor_tiempo)
+                elif isinstance(item, (tuple, list)) and len(item) == 2 and isinstance(item[0], (list, tuple, np.ndarray)):
+                    pt_raw, t_sec = item
+                    t_target = float(t_sec) * float(factor_tiempo)
                 else:
-                    self.MoveJ_q(q_rad_list[0], spd=30, unit='rad')
-                time.sleep(0.2)
+                    pt_raw = item
+                    t_target = idx * dt_fallback * float(factor_tiempo)
 
-            # 3. Si estamos en el entorno de MoveIt (demo.launch.py), enviar al ActionServer arm_controller
-            # para que FakeSystem ejecute la curva suave a 100 Hz sin pelear por /joint_states
-            if self.moveit_manager is not None:
-                from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-                from builtin_interfaces.msg import Duration
+                q_arr = np.asarray(pt_raw, dtype=float)[:6]
+                q_rad = np.deg2rad(q_arr) if is_degrees else q_arr
+                prepared_points.append((q_rad, t_target))
 
-                jt = JointTrajectory()
-                jt.joint_names = self.ARM_JOINT_NAMES
-
-                for q_rad, t_sec in zip(q_rad_list, t_sec_list):
-                    pt = JointTrajectoryPoint()
-                    pt.positions = [float(x) for x in q_rad]
-                    sec = int(t_sec)
-                    nanosec = int((t_sec - sec) * 1e9)
-                    pt.time_from_start = Duration(sec=sec, nanosec=nanosec)
-                    jt.points.append(pt)
-
-                ok = self.moveit_manager._send_trajectory_action(jt, wait_for_result=True)
-                if ok:
-                    last_q = q_rad_list[-1]
-                    return RobTarget.from_q(last_q, tool)
-                else:
-                    self.logger.warning("Action server no disponible, usando publicación directa...")
-
-            # 4. Fallback (si estás usando move.launch.py sin MoveIt):
-            # Publicar con reloj monotónico exacto
+            # Obtener estado actual del gripper para mantenerlo durante el movimiento en RViz
             q_full_now = self.get_current_q(prefer_gripper=True, timeout=0.5)
-            gripper_val = float(q_full_now[6]) if q_full_now is not None else 0.0
+            gripper_val = float(q_full_now[6]) if (q_full_now is not None and len(q_full_now) >= 7) else 0.0
 
-            start_time = time.perf_counter()
-            for q_rad, t_sec in zip(q_rad_list, t_sec_list):
-                wait_time = (start_time + t_sec) - time.perf_counter()
-                if wait_time > 0:
-                    time.sleep(wait_time)
+            t_start = time.perf_counter()
+            for q_rad, t_target in prepared_points:
+                wait_s = (t_start + t_target) - time.perf_counter()
+                if wait_s > 0.001:
+                    time.sleep(wait_s)
 
+                q_full = np.append(q_rad, gripper_val)
                 msg = JointState()
                 msg.header.stamp = self.node_joint.get_clock().now().to_msg()
-                msg.name = self.JOINT_NAMES_FULL
-                msg.position = [float(x) for x in q_rad] + [gripper_val]
+                msg.name = joint_names
+                msg.position = q_full.tolist()
                 self.node_joint.publisher.publish(msg)
+                self.q_current = q_full.copy()
 
-            last_q = q_rad_list[-1]
-            return RobTarget.from_q(last_q, tool)
+            q_goal_rad = prepared_points[-1][0]
+
+            return RobTarget.from_q(q_goal_rad, tool)
         
+            
         def add_scene_object(self, name: str, pose_init: tuple, size: tuple, 
                          color: tuple = (0.5, 0.5, 0.5, 1.0),
                          shape: int = 1, movable: bool = True, 
@@ -1731,8 +1710,48 @@ class MyCobotController(BaseRobotController):
         else:
             raise ValueError("Modo de conexión no válido. Intente con 'raspi' o 'TCP/IP'.")
 
+        # Agregamos la modificacion de los parametros de aceleracion de los servos
+        self._init_servo_ram_dynamics()
+
         self._server_ref = None
 
+    def _init_servo_ram_dynamics(self, acc_scale: float = 0.30):
+        """
+        Configura en SRAM (Registro 0x29 = 41) las rampas de aceleración interna de cada
+        motor Feetech escaladas exactamente al régimen de trabajo (por defecto acc_scale = 0.30).
+        Con acc_scale=0.30 carga {1: 8, 2: 7, 3: 8, 4: 9, 5: 10, 6: 10} (~1.07 a 1.53 rad/s^2).
+        """
+        import numpy as np
+        REG_ACCEL_SRAM = 41  # 0x29: 1 unidad = 100 steps/s^2 = 0.1534 rad/s^2
+        STEP_RAD_S2 = 0.1534
+        MARGIN = 1.25        # +25% sobre la aceleración de MoveIt para no causar lag
+
+        # Aceleraciones máximas al 100% definidas en joint_limits.yaml (rad/s^2)
+        max_acc_yaml = {1: 3.00, 2: 2.50, 3: 3.00, 4: 3.50, 5: 4.00, 6: 4.00}
+
+        scale = float(np.clip(acc_scale, 0.10, 1.00))
+        ram_accels = {}
+        for sid, a_max in max_acc_yaml.items():
+            a_work = a_max * scale * MARGIN
+            reg_val = int(np.clip(round(a_work / STEP_RAD_S2), 6, 40))
+            ram_accels[sid] = reg_val
+
+        try:
+            if hasattr(self, "pause_serial_reading"):
+                self.pause_serial_reading(True)
+                time.sleep(0.03)
+            for servo_id, acc_val in ram_accels.items():
+                self.mc.set_servo_data(servo_id, REG_ACCEL_SRAM, acc_val)
+                time.sleep(0.02)
+            self.logger.info(
+                f"Rampas 0x29 en SRAM ajustadas para acc_scale={scale:.2f}: {ram_accels}"
+            )
+        except Exception as e:
+            self.logger.warning(f"No se pudo inicializar 0x29 en SRAM: {e}")
+        finally:
+            if hasattr(self, "pause_serial_reading"):
+                self.pause_serial_reading(False)
+    
     def MoveJ(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='MoveJ_wobj', robt_name='MoveJ_robt'):
         """
         Implementación de MoveJ para el robot físico MyCobot320. 
@@ -1771,23 +1790,39 @@ class MyCobotController(BaseRobotController):
 
     def GripperState(self, apertura: int, spd: int = 30):
         """
-        Implementación de `GripperState` para el robot físico MyCobot320.
+        Implementación de `GripperState` para el robot físico MyCobot320 con verificación
+        de apertura real alcanzada y detección de objeto sujetado.
         """
-        # Primero hay que activar el gripper con la API, luego se pide el movimiento
-        self.mc.set_gripper_mode(0)
-        
-        # Si apertura es 0 o 1 se usa la función de abrir/cerrar
-        if apertura == 0:
-            self.mc.set_gripper_state(1, spd)
-        elif apertura == 100:
-            self.mc.set_gripper_state(0, spd)
-        # Si se pide una posición intermedia la función de la API cambia
-        else:
-            self.mc.set_gripper_value(apertura, spd, 1)
+        apertura_int = int(np.clip(round(apertura), 0, 100))
+        spd_int = int(np.clip(round(spd), 1, 100))
 
-        # Envío del comando al observer para el modo de transmisión en vivo
         if self._server_ref is not None:
-            self._server_ref.set_gripper_state(apertura)
+            self._server_ref.pause_serial_reading(True)
+
+        try:
+            self.mc.set_gripper_mode(0)
+            if apertura_int == 0:
+                self.mc.set_gripper_state(1, spd_int)
+            elif apertura_int == 100:
+                self.mc.set_gripper_state(0, spd_int)
+            else:
+                self.mc.set_gripper_value(apertura_int, spd_int, 1)
+
+            time.sleep(0.45)
+            real_aperture = float(apertura_int)
+            if hasattr(self.mc, "get_gripper_value"):
+                val_leido = self.mc.get_gripper_value()
+                if val_leido is not None and 0 <= val_leido <= 100:
+                    real_aperture = float(val_leido)
+
+            if apertura_int <= 10 and real_aperture >= 12.0:
+                self.logger.info(
+                    f"[Gripper] ¡Objeto detectado! Comando: {apertura_int}% -> Retenido en {real_aperture:.0f}%"
+                )
+        finally:
+            if self._server_ref is not None:
+                self._server_ref.set_gripper_state(real_aperture)
+                self._server_ref.pause_serial_reading(False)
 
     def MoveJ_q(self, q, spd = 30, unit = 'rad'):
         """
@@ -1939,10 +1974,11 @@ class MyCobotController(BaseRobotController):
 
         return poses_q, poses_coord
         
-    def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
+    def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3(), factor_tiempo: float = 1.0):
         """
         Implementación de `traj_moveit` en el robot real. Lee la trayectoria pre-procesada
-        y la envía respetando los tiempos y velocidades de MoveIt.
+        (detectando automáticamente si los ángulos están en radianes o grados) y la envía
+        respetando los tiempos y velocidades de MoveIt mediante reloj monotónico.
         """
         if tool is None:
             tool = SE3()
@@ -1952,29 +1988,43 @@ class MyCobotController(BaseRobotController):
             self.logger.error(f"No se pudo cargar la trayectoria {traj_name} de {archivo}")
             return None
 
-        # Detectar automáticamente si el archivo tiene el formato nuevo (q_deg, speed, t_sec)
-        # o el formato viejo (q_rad, t_sec)
-        formato_nuevo = (len(traj_data[0]) == 3)
+        # Detectar automáticamente si los vectores articulares están en grados (> 2*pi) o en radianes (<= 2*pi)
+        all_q_max = max(
+            float(np.max(np.abs(np.asarray(item[0] if (isinstance(item, (tuple, list)) and len(item) in (2, 3)) else item, dtype=float)[:6])))
+            for item in traj_data
+        )
+        is_degrees = (all_q_max > (2.0 * np.pi + 0.05))
 
-        if formato_nuevo:
-            waypoints = traj_data
-        else:
-            # Si es un archivo viejo en radianes, lo convertimos una sola vez antes de empezar el reloj
-            waypoints = []
-            for pt, t_sec in traj_data:
-                q_deg = [float(x) for x in np.rad2deg(np.asarray(pt)[:6])]
-                waypoints.append((q_deg, 25, t_sec))
+        waypoints = []
+        dt_fallback = 0.04
+        for idx, item in enumerate(traj_data):
+            if isinstance(item, (tuple, list)) and len(item) == 3:
+                pt_raw, spd_val, t_sec = item
+                spd = int(np.clip(spd_val, 6, 95))
+                t_target = float(t_sec) * float(factor_tiempo)
+            elif isinstance(item, (tuple, list)) and len(item) == 2:
+                pt_raw, t_sec = item
+                spd = 25
+                t_target = float(t_sec) * float(factor_tiempo)
+            else:
+                pt_raw = item
+                spd = 25
+                t_target = idx * dt_fallback * float(factor_tiempo)
+
+            q_arr = np.asarray(pt_raw, dtype=float)[:6]
+            q_deg = [round(float(x), 2) for x in (q_arr if is_degrees else np.rad2deg(q_arr))]
+            spd_scaled = int(np.clip(round(spd / float(factor_tiempo)), 6, 95))
+            waypoints.append((q_deg, spd_scaled, t_target))
 
         # Asegurar que el robot esté en el punto inicial (t=0) antes de largar el cronómetro
         first_q_deg = waypoints[0][0]
         q_actual = self.mc.get_angles()
-        # Solo usar sync_send_angles si el robot está a más de 2 grados del inicio
         if not q_actual or np.max(np.abs(np.array(q_actual) - np.array(first_q_deg))) > 2.0:
-            self.mc.sync_send_angles(first_q_deg, 10)
+            self.mc.sync_send_angles(first_q_deg, 15)
 
         # Activar modo de procesamiento continuo (sin frenar entre puntos intermedios)
         self.mc.set_fresh_mode(1)
-        time.sleep(0.05)
+        time.sleep(0.04)
 
         self.logger.info(f"Ejecutando {len(waypoints)} waypoints sincronizados...")
 
@@ -1987,7 +2037,7 @@ class MyCobotController(BaseRobotController):
         try:
             for q_deg, spd, t_sec in waypoints[1:]:
                 wait_time = (start_time + t_sec) - time.perf_counter()
-                if wait_time > 0:
+                if wait_time > 0.001:
                     time.sleep(wait_time)
 
                 self.mc.send_angles(q_deg, spd)
@@ -1995,28 +2045,31 @@ class MyCobotController(BaseRobotController):
                 # Informar al servidor TCP en RAM para verlo en vivo en RViz
                 if self._server_ref is not None:
                     self._server_ref.set_external_angles(q_deg)
-                    
+
+            # Ajuste fino del último punto antes de reactivar la lectura periódica del bridge
+            time.sleep(0.05)
+            self.mc.set_fresh_mode(0)
+            time.sleep(0.05)
+            last_q_deg = waypoints[-1][0]
+            self.mc.send_angles(last_q_deg, 10)
+            time.sleep(0.25)
+
         finally:
-            # Al terminar la trayectoria (o si hay error), reanudar la lectura normal de encoders
+            # Asegurar que siempre vuelva a fresh_mode(0) y reanude la lectura de encoders
+            try:
+                self.mc.set_fresh_mode(0)
+            except Exception:
+                pass
             if self._server_ref is not None:
                 self._server_ref.pause_serial_reading(False)
 
         # Medir duración real del bucle vs tiempo planificado por MoveIt
-        t_real_bucle = time.perf_counter() - start_time
+        t_real_bucle = time.perf_counter() - start_time - 0.35
         t_planificado = waypoints[-1][2]
 
-        # Volver a modo secuencial y asegurar ajuste fino del último punto
-        time.sleep(0.05)
-        self.mc.set_fresh_mode(0)
-        time.sleep(0.05)
-        last_q_deg = waypoints[-1][0]
-        self.mc.send_angles(last_q_deg, 10)
-
-        # Esperar asentamiento mecánico breve para leer encoders finales sin interferir
-        time.sleep(0.3)
         q_alcanzado_deg = self.mc.get_angles()
 
-        # Armar el RobTarget de la pose destino (pasando el último punto de grados a radianes)
+        # Armar el RobTarget de la pose destino
         last_q_rad = np.deg2rad(last_q_deg)
         last_robt = RobTarget.from_q(last_q_rad, tool)
 
@@ -2025,7 +2078,6 @@ class MyCobotController(BaseRobotController):
             err_q_deg = np.abs(np.array(last_q_deg) - np.array(q_alcanzado_deg))
             max_err_q = float(np.max(err_q_deg))
 
-            # Pose esperada vs Pose alcanzada según encoders (en mm)
             pose_esp = self.cobot_tb.fkine(last_q_rad) * tool
             pose_alc = self.cobot_tb.fkine(np.deg2rad(q_alcanzado_deg)) * tool
             err_tcp_mm = float(np.linalg.norm(pose_esp.t - pose_alc.t))

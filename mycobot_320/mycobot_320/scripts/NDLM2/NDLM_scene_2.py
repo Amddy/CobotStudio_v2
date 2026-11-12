@@ -34,7 +34,8 @@ def setup_scene(robot_manager: ROSManager):
             color=(212/255, 212/255, 212/255, 1.0),
             shape=Shapes.CUBE,
             movable=False,
-            rot_euler=(np.pi/2, 0, rotz_piezas)
+            rot_euler=(np.pi/2, 0, rotz_piezas),
+            touch_links=["mesa"]
         )
 
         robot_manager.add_scene_object(

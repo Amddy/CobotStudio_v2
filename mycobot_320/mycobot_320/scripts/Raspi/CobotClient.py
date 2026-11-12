@@ -7,7 +7,6 @@ from control_msgs.action import FollowJointTrajectory, GripperCommand
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32
 from std_srvs.srv import SetBool
-import tkinter as tk
 from sensor_msgs.msg import JointState
 import socket
 import threading
@@ -77,6 +76,7 @@ class CobotClient(Node):
         self._latest_data = None
         self._latest_ts = None
         self._traj_status = "IDLE"
+        self._traj_metrics = None
         self._active_sock = None
 
         # Iniciar el hilo del cliente
@@ -202,11 +202,10 @@ class CobotClient(Node):
     def execute_gripper_callback(self, goal_handle):
         """
         Callback del ActionServer '/grip_action_controller/gripper_cmd'.
-        Recibe la posición en radianes desde MoveIt/RViz (-0.7 a 0.3 rad),
-        la convierte a escala porcentual (0 a 100%) y la ejecuta en el cobot real.
+        Envía el comando a la Raspberry Pi, espera la lectura real del encoder de la pinza
+        y reporta la posición real alcanzada (detectando si un objeto detuvo el cierre).
         """
         pos_rad = float(goal_handle.request.command.position)
-        # Mapeo inverso al de _publish_latest: (-0.7 rad -> 0%, 0.3 rad -> 100%)
         apertura_pct = max(0.0, min(100.0, (pos_rad + 0.7) * 100.0))
 
         self.get_logger().info(
@@ -220,9 +219,19 @@ class CobotClient(Node):
             goal_handle.abort()
             return result
 
-        # Tiempo de asentamiento mecánico para que la pinza física complete el recorrido
-        time.sleep(0.5)
-        result.position = pos_rad
+        # Esperar a que CobotServer ejecute el movimiento, mida get_gripper_value() y actualice el JSON
+        time.sleep(0.65)
+        with self._lock:
+            real_pct = float(self._latest_data[1]) if self._latest_data is not None else apertura_pct
+
+        real_rad = (real_pct * 0.01) - 0.7
+        if apertura_pct <= 10.0 and real_pct >= 12.0:
+            self.get_logger().info(
+                f"[Gripper] ¡Objeto detectado entre los dedos! "
+                f"Comando: {apertura_pct:.0f}% | Apertura real retenida: {real_pct:.0f}% ({real_rad:.3f} rad)"
+            )
+
+        result.position = real_rad
         result.reached_goal = True
         goal_handle.succeed()
         return result
@@ -231,51 +240,76 @@ class CobotClient(Node):
     # CONTROL DE TRAYECTORIAS DEL BRAZO (MoveIt -> Raspberry Pi)
     # ------------------------------------------------------------------------
 
-    def _interpolate_trajectory(self, points, idx_map, freq_hz: float = 25.0, max_servo_deg_s: float = 140.0):
+    def _interpolate_trajectory(self, points, idx_map, freq_hz: float = 25.0,
+                                max_servo_deg_s: float = 150.0, lead_gain: float = 1.10,
+                                min_speed: int = 6, max_speed: int = 95):
         """
-        Re-muestrea los waypoints de MoveIt a frecuencia constante (25 Hz) usando CubicSpline
-        y calcula la velocidad dinámica (1-100) de cada tramo según la derivada articular.
+        Re-muestrea los waypoints de MoveIt a 25 Hz usando CubicSpline, calcula la velocidad
+        dinámica (6-95) con cola anti-caída y estima el factor de escala de aceleración (acc_scale)
+        para ajustar automáticamente el registro 0x29 en la SRAM de los servos.
         """
-        t_orig = np.array([p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in points], dtype=float)
-        q_orig_deg = np.array([[math.degrees(p.positions[i]) for i in idx_map] for p in points], dtype=float)
+        t_orig = []
+        q_orig_deg = []
+        for p in points:
+            t_sec = float(p.time_from_start.sec) + float(p.time_from_start.nanosec) * 1e-9
+            if len(t_orig) > 0 and t_sec <= t_orig[-1]:
+                continue
+            t_orig.append(t_sec)
+            q_orig_deg.append([math.degrees(p.positions[i]) for i in idx_map])
 
-        # Filtrar posibles puntos con tiempos duplicados
-        _, unique_idx = np.unique(t_orig, return_index=True)
-        t_orig = t_orig[unique_idx]
-        q_orig_deg = q_orig_deg[unique_idx]
+        t_orig = np.asarray(t_orig, dtype=float)
+        q_orig_deg = np.asarray(q_orig_deg, dtype=float)
 
         total_time = float(t_orig[-1])
         if len(t_orig) < 2 or total_time <= 0.05:
-            q_end = [round(float(x), 3) for x in q_orig_deg[-1]]
-            return [q_end + [20, round(total_time, 4)]]
+            q_end = [round(float(x), 2) for x in q_orig_deg[-1]]
+            return [q_end + [15, round(total_time, 4)]], 0.30
 
-        # Ajustar Spline Cúbico con velocidad inicial y final nula (clamped)
         cs = CubicSpline(t_orig, q_orig_deg, axis=0, bc_type='clamped')
 
-        dt = 1.0 / freq_hz
+        dt = 1.0 / float(freq_hz)
         t_interp = np.arange(0.0, total_time, dt)
-        if t_interp[-1] < total_time:
+        if not np.isclose(t_interp[-1], total_time):
             t_interp = np.append(t_interp, total_time)
 
-        q_interp = cs(t_interp)
-        # Derivada primera: velocidad angular real en grados/s para cada articulación
-        dq_interp = np.abs(cs(t_interp, 1))
-        max_vel_deg_s = np.max(dq_interp, axis=1)
+        q_interp_deg = cs(t_interp)
+        vel_inst_deg_s = np.abs(cs(t_interp, 1))
+        acc_inst_rad_s2 = np.deg2rad(np.abs(cs(t_interp, 2)))
 
+        # Mejora 1: Estimar el acc_scale real de la trayectoria respecto a joint_limits.yaml
+        max_acc_yaml = np.array([3.00, 2.50, 3.00, 3.50, 4.00, 4.00], dtype=float)
+        peak_acc_per_joint = np.max(acc_inst_rad_s2, axis=0)
+        est_acc_scale = float(np.clip(np.max(peak_acc_per_joint / max_acc_yaml), 0.15, 1.00))
+
+        n_pts = len(t_interp)
         points_payload = []
-        for i in range(len(t_interp)):
-            # Mapear la velocidad angular requerida a la escala 1..100 de pymycobot
-            spd = int(np.clip(round((max_vel_deg_s[i] / max_servo_deg_s) * 100.0), 6, 100))
-            q_list = [round(float(val), 3) for val in q_interp[i]]
-            points_payload.append(q_list + [spd, round(float(t_interp[i]), 4)])
+        for k in range(n_pts):
+            v_inst_max = float(np.max(vel_inst_deg_s[k]))
+            if k > 0:
+                dt_step = max(1e-4, float(t_interp[k] - t_interp[k - 1]))
+                dq_step_deg = np.abs(q_interp_deg[k] - q_interp_deg[k - 1])
+                v_sec_max = float(np.max(dq_step_deg) / dt_step)
+            else:
+                v_sec_max = v_inst_max
 
-        return points_payload
+            v_req_deg_s = max(v_inst_max, v_sec_max) * float(lead_gain)
+            raw_pct = (v_req_deg_s / float(max_servo_deg_s)) * 100.0
+            spd = int(np.clip(round(raw_pct), min_speed, max_speed))
+
+            q_list = [round(float(val), 2) for val in q_interp_deg[k]]
+            points_payload.append(q_list + [spd, round(float(t_interp[k]), 4)])
+
+        return points_payload, round(est_acc_scale, 2)
 
     def execute_callback(self, goal_handle):
-        """Esta función se activa cuando MoveIt manda una trayectoria."""
+        """
+        Recibe la trayectoria desde MoveIt, la interpola a 25 Hz, la envía con el acc_scale
+        estimado a CobotServer, publica Feedback de ROS 2 en vivo e informa las métricas finales.
+        """
+        from builtin_interfaces.msg import Duration
+
         self.get_logger().info('¡Trayectoria recibida de MoveIt! Interpolando y enviando a la Raspberry Pi...')
 
-        # Extraemos la lista de puntos calculados por MoveIt
         points = goal_handle.request.trajectory.points
         traj_joint_names = goal_handle.request.trajectory.joint_names
 
@@ -283,27 +317,35 @@ class CobotClient(Node):
             goal_handle.abort()
             return FollowJointTrajectory.Result()
 
-        # Asegurar el orden correcto de las 6 articulaciones del brazo según URDF
         arm_joints = JOINT_NAMES[:6]
         try:
             idx_map = [traj_joint_names.index(jn) for jn in arm_joints]
         except ValueError:
             idx_map = list(range(6))
 
-        # Interpolar a 25 Hz con velocidades dinámicas suaves
-        points_payload = self._interpolate_trajectory(points, idx_map, freq_hz=25.0, max_servo_deg_s=140.0)
+        # Interpolar a 25 Hz y obtener también el acc_scale estimado de esta trayectoria
+        points_payload, est_acc_scale = self._interpolate_trajectory(
+            points, idx_map, freq_hz=25.0, max_servo_deg_s=150.0
+        )
 
         with self._lock:
             self._traj_status = "EXECUTING"
+            self._traj_metrics = None
 
-        # Enviar la trayectoria interpolada al CobotServer en la Raspberry Pi
-        if not self._send_to_server({"cmd": "EXECUTE_TRAJ", "points": points_payload}):
+        # Enviar la trayectoria y la escala de aceleración al CobotServer en la Raspberry Pi
+        if not self._send_to_server({
+            "cmd": "EXECUTE_TRAJ",
+            "points": points_payload,
+            "acc_scale": est_acc_scale
+        }):
             goal_handle.abort()
             return FollowJointTrajectory.Result()
 
-        # BUCLE DE MONITOREO MIENTRAS LA RASPBERRY PI EJECUTA LA TRAYECTORIA
+        t_exec_start = time.perf_counter()
+        last_fb_time = 0.0
+
+        # BUCLE DE MONITOREO Y PUBLICACIÓN DE FEEDBACK EN TIEMPO REAL
         while rclpy.ok():
-            # Si MoveIt detecta un choque inminente o el usuario cancela la acción
             if goal_handle.is_cancel_requested:
                 self.get_logger().warn('¡PARADA DE EMERGENCIA solicitada por MoveIt!')
                 self._send_to_server({"cmd": "CANCEL_TRAJ"})
@@ -312,11 +354,50 @@ class CobotClient(Node):
 
             with self._lock:
                 status = self._traj_status
+                metrics = self._traj_metrics
+                latest_data = self._latest_data
+
+            # Mejora 3: Publicar Feedback de FollowJointTrajectory a 20 Hz (cada 0.05 s)
+            elapsed = time.perf_counter() - t_exec_start
+            if (elapsed - last_fb_time) >= 0.05 and latest_data is not None:
+                last_fb_time = elapsed
+                actual_deg = latest_data[0]
+                actual_rad = [math.radians(a) for a in actual_deg]
+
+                # Buscar el waypoint deseado correspondiente al tiempo transcurrido
+                des_pt = points_payload[-1]
+                for wp in points_payload:
+                    if wp[7] >= elapsed:
+                        des_pt = wp
+                        break
+                desired_rad = [math.radians(a) for a in des_pt[:6]]
+                error_rad = [d - a for d, a in zip(desired_rad, actual_rad)]
+
+                fb = FollowJointTrajectory.Feedback()
+                fb.header.stamp = self.get_clock().now().to_msg()
+                fb.joint_names = arm_joints
+                fb.desired.positions = desired_rad
+                fb.actual.positions = actual_rad
+                fb.error.positions = error_rad
+                sec = int(elapsed)
+                fb.actual.time_from_start = Duration(sec=sec, nanosec=int((elapsed - sec) * 1e9))
+                goal_handle.publish_feedback(fb)
 
             if status == "SUCCEEDED":
                 self._send_to_server({"cmd": "RESET_STATUS"})
                 goal_handle.succeed()
-                self.get_logger().info('Movimiento completado con éxito.')
+
+                # Mejora 2: Mostrar las métricas cuantitativas reportadas por los encoders de la Raspi
+                if metrics is not None and metrics.get("max_err_deg") is not None:
+                    self.get_logger().info(
+                        f"[Métricas MoveIt Online] Tiempo: {metrics['t_real']:.2f}s "
+                        f"(Plan: {metrics['t_plan']:.2f}s, Diff: {metrics['t_diff']:+.3f}s) | "
+                        f"Max Err Articular: {metrics['max_err_deg']:.2f}° | "
+                        f"Err/Eje (°): {metrics['err_per_joint_deg']}"
+                    )
+                else:
+                    self.get_logger().info('Movimiento completado con éxito.')
+
                 result = FollowJointTrajectory.Result()
                 result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
                 return result
@@ -376,11 +457,10 @@ class CobotClient(Node):
                 data = conn.recv(4096)
                 if not data:
                     self.get_logger().warn("El servidor cerró la conexión.")
-                    break # Salir para reconectar
+                    break
                 
                 buffer += data.decode('utf-8', errors='replace')
                 
-                # Procesar líneas completas
                 while '\n' in buffer:
                     line, buffer = buffer.split('\n', 1)
                     line = line.strip()
@@ -389,36 +469,35 @@ class CobotClient(Node):
                     
                     parsed = self._parse_line(line)
                     if parsed is not None:
-                        angles, gripper_raw, traj_status = parsed
+                        angles, gripper_raw, traj_status, traj_metrics = parsed
                         with self._lock:
                             self._latest_data = (angles, gripper_raw)
                             self._latest_ts = time.time()
                             if traj_status is not None:
                                 self._traj_status = traj_status
+                            if traj_metrics is not None:
+                                self._traj_metrics = traj_metrics
                             
             except socket.timeout:
-                # Si el robot no envía nada por un momento, seguir esperando
                 continue
             except Exception as e:
                 self.get_logger().error(f"Error leyendo datos: {e}")
                 break
 
     def _parse_line(self, line: str):
-        """Parsea el JSON recibido. Retorna (angles_list, gripper_float, traj_status) o None."""
-        # Chequear que corresponda a JSON
+        """Parsea el JSON recibido. Retorna (angles_list, gripper_float, traj_status, traj_metrics) o None."""
         if not line.startswith('{'):
             return None
         
         try:
             payload = json.loads(line)
-
-            # Busca la key 'angles', 'angle' o 'joints'
             angles = payload.get("angles") or payload.get("angle") or payload.get("joints")
             gripper_raw = payload.get("gripper", 0.0)
             traj_status = payload.get("traj_status", None)
+            traj_metrics = payload.get("traj_metrics", None)
 
             if isinstance(angles, list) and len(angles) == 6:
-                return (angles, gripper_raw, traj_status)
+                return (angles, gripper_raw, traj_status, traj_metrics)
         
         except json.JSONDecodeError:
             return None

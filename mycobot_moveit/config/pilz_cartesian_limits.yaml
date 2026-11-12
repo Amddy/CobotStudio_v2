@@ -5,3 +5,5 @@ cartesian_limits:
   max_trans_acc: 0.50       # Aceleración lineal máxima: 0.50 m/s^2
   max_trans_dec: -0.50      # Desaceleración máxima (obligatorio negativo): -0.50 m/s^2
   max_rot_vel: 1.57         # Velocidad angular máxima del TCP: 1.57 rad/s (~90°/s)
+
+  

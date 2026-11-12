@@ -2,10 +2,9 @@
 """
 Script Maestro para La Noche de los Museos (demo_museos_master.py)
 Integra:
-  1. Rutina de Llaveros Multiconfiguración (Offline/Híbrida con MoveL + Saludo)
-  2. Desafío en Vivo: Evasión Dinámica de Obstáculos con Cámara RGB-D y OctoMap
-  3. Demo Didáctica: Movimiento en el Núcleo de la Singularidad de Muñeca (q5 = 0°)
-  4. Demo Didáctica: Múltiples Configuraciones Cinemáticas para una Misma Pose
+  1. Desafío en Vivo: Evasión Dinámica de Obstáculos con Cámara RGB-D y OctoMap
+  2. Demo Didáctica: Movimiento en el Núcleo de la Singularidad de Muñeca (q5 = 0°)
+  3. Demo Didáctica: Múltiples Configuraciones Cinemáticas para una Misma Pose
 """
 
 from Cobot_sdk import *
@@ -17,19 +16,30 @@ import importlib.util
 from pathlib import Path
 import numpy as np
 
-# Nombre del archivo de trayectorias pre-calculadas para los llaveros
-ARCHIVO_TRAJ = "Rutina_NDLM"
+def obtener_q_actual(robot: BaseRobotController) -> np.ndarray:
+    """Obtiene el vector articular actual (en rad) en ROS."""
+    #  Solo consultar robot.mc si estamos en el controlador físico real
+    if robot.__class__.__name__ == "MyCobotController" and hasattr(robot, "mc"):
+        try:
+            q_deg = robot.mc.get_angles()
+            if q_deg is not None and len(q_droboteg) == 6:
+                return np.deg2rad(np.array(q_deg, dtype=float))
+        except Exception:
+            pass
 
-# Tiempos y parámetros operativos
-ESPERA_ENTRE_TRAMOS = 1.0
-ESPERA_AGARRE_LLAVE = 1.5
-ESPERA_ENTREGA_PUBLICO = 4.0
-DESCENSO_MOVEL_MM = -25.0
+    #  En modo ROS, leer directamente del suscriptor de /joint_states
+    if hasattr(robot, "get_current_q"):
+        try:
+            q = robot.get_current_q(prefer_gripper=False)
+            if q is not None and len(q) >= 6:
+                return np.array(q[:6], dtype=float)
+        except Exception:
+            pass
 
-# Offset global de tu escena
-dx, dy, dz = 0.0, 0.0, 175.0
-offset_xy = SE3(dx, dy, dz)
+    if hasattr(robot, "q_current") and robot.q_current is not None:
+        return np.array(robot.q_current[:6], dtype=float)
 
+    return np.zeros(6, dtype=float)
 
 def limpiar_octomap():
     """Llama al servicio /clear_octomap de MoveIt 2 para borrar vóxeles fantasma."""
@@ -44,34 +54,6 @@ def limpiar_octomap():
         pass
 
 
-def cargar_catalogo_robusto(robot, nombre_archivo: str):
-    """Carga CATALOGO_RUTAS usando load_data o búsqueda directa en Trayectorias/."""
-    try:
-        cat = robot.load_data("Trayectorias", nombre_archivo, "CATALOGO_RUTAS")
-        if cat:
-            return cat
-    except Exception:
-        pass
-
-    posibles_bases = []
-    if hasattr(robot, "project_root") and robot.project_root:
-        posibles_bases.append(Path(robot.project_root))
-    posibles_bases.append(Path(os.path.dirname(os.path.abspath(__file__))))
-
-    for base in posibles_bases:
-        for nombre in (nombre_archivo, "mi_archivo", "reconfiguraciones"):
-            ruta = base / "Trayectorias" / f"{nombre}.py"
-            if ruta.exists():
-                try:
-                    spec = importlib.util.spec_from_file_location("mod_rutas", ruta)
-                    modulo = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(modulo)
-                    if hasattr(modulo, "CATALOGO_RUTAS"):
-                        print(f"[*] Catálogo cargado desde: {ruta}")
-                        return getattr(modulo, "CATALOGO_RUTAS")
-                except Exception as e:
-                    print(f"[!] Error leyendo {ruta}: {e}")
-    return None
 
 
 def ir_a_home_seguro(robot, speed=15):
@@ -114,94 +96,9 @@ def run(robot: BaseRobotController, **kwargs):
         except Exception:
             pass
 
-    catalogo = cargar_catalogo_robusto(robot, ARCHIVO_TRAJ)
 
     # =========================================================================
-    # MÓDULO 1: RUTINA DE LLAVEROS + SALUDO + MOVEL (OFFLINE / HÍBRIDA)
-    # =========================================================================
-    # def saludar():
-    #     print("\n>>> Ejecutando Saludo al Público...")
-    #     try:
-    #         robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_1", tool=pinza)
-    #         robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_2", tool=pinza)
-    #         robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_3", tool=pinza)
-    #         robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_HOME", tool=pinza)
-    #         time.sleep(ESPERA_ENTRE_TRAMOS)
-    #     except Exception:
-    #         # Fallback con MoveJ directo si no están grabados los tramos de saludo
-    #         if hasattr(robot, "toggle_ros_connection"):
-    #             robot.toggle_ros_connection(False)
-    #         saludo1 = RobTarget(offset_xy * SE3(215, 0.5, 425) * SE3.Ry(np.pi/2) * SE3.Rz(np.pi/2), [-1, 1, 1])
-    #         saludo2 = RobTarget(offset_xy * SE3(250, 0.5, 350) * SE3.Ry(np.pi/2) * SE3.Rz(np.pi/2) * SE3.Rx(np.pi/4), [-1, 1, 1])
-    #         robot.MoveJ(saludo1, 45, pinza, wobj_nulo)
-    #         robot.MoveJ(saludo2, 40, pinza, wobj_nulo)
-    #         robot.MoveJ(saludo1, 35, pinza, wobj_nulo)
-    #         ir_a_home_seguro(robot, speed=30)
-
-    def ejecutar_llave(num_llave: int, con_saludo: bool = True):
-        if not catalogo:
-            print(f"[!] Catálogo no disponible en Trayectorias/{ARCHIVO_TRAJ}.py.")
-            return
-
-        variantes = catalogo.get(num_llave) or catalogo.get(str(num_llave)) or []
-        if not variantes:
-            print(f"[!] No hay variantes válidas guardadas para la Llave {num_llave}.")
-            return
-
-        ruta = random.choice(variantes)
-        print("\n" + "-" * 68)
-        print(f" >>> ENTREGANDO LLAVERO {num_llave} (Variante Aleatoria #{ruta['variante']})")
-        print(f"     Configuración Toma    : {ruta['conf_llave']}")
-        print(f"     Configuración Entrega : {ruta['conf_entrega']}")
-        print("-" * 68)
-
-        try:
-            # if con_saludo:
-            #     saludar()
-
-            # robot.GripperState(60, 30)
-            # time.sleep(0.5)
-
-            # print(f"  [1/3] Yendo de Home a Llavero {num_llave}...")
-            # robt_llave = robot.traj_moveit(ARCHIVO_TRAJ, ruta["ida"], tool=pinza)
-            # time.sleep(ESPERA_ENTRE_TRAMOS)
-
-            # # Desactivar broadcaster temporalmente en simulación para que MoveL no parpadee
-            # if hasattr(robot, "toggle_ros_connection"):
-            #     robot.toggle_ros_connection(False)
-
-            print(f"  [*] Descenso lineal MoveL ({DESCENSO_MOVEL_MM} mm)...")
-            robot.MoveL(robt_llave.offset(0, 0, DESCENSO_MOVEL_MM), speed=12, tool=pinza, wobj=wobj_nulo)
-            time.sleep(0.8)
-
-            print("  [*] Cerrando pinza para sujetar llavero...")
-            robot.GripperState(0, 30)
-            time.sleep(ESPERA_AGARRE_LLAVE)
-
-            print("  [*] Ascenso lineal MoveL de retorno...")
-            robot.MoveL(robt_llave, speed=12, tool=pinza, wobj=wobj_nulo)
-            time.sleep(0.5)
-
-            print("  [2/3] Llevando llavero a posición de Entrega...")
-            robot.traj_moveit(ARCHIVO_TRAJ, ruta["entrega"], tool=pinza)
-
-            print(f"  [*] Esperando {ESPERA_ENTREGA_PUBLICO}s para que el visitante reciba el llavero...")
-            time.sleep(ESPERA_ENTREGA_PUBLICO)
-            robot.GripperState(100, 30)
-            time.sleep(1.0)
-
-            print("  [3/3] Regresando a Home...")
-            robot.traj_moveit(ARCHIVO_TRAJ, ruta["home"], tool=pinza)
-            robot.GripperState(0, 30)  # Dejar pinza cerrada en Home para el Self-Filtering
-            time.sleep(ESPERA_ENTRE_TRAMOS)
-            print(f"[OK] ¡Secuencia de Llavero {num_llave} completada!")
-
-        except Exception as e:
-            print(f"[!] Error controlado en rutina de llavero: {e}")
-            ir_a_home_seguro(robot, speed=25)
-
-    # =========================================================================
-    # MÓDULO 2: DESAFÍO EN VIVO - EVASIÓN DINÁMICA CON OCTOMAP (CÁMARA RGB-D)
+    # MÓDULO 1: DESAFÍO EN VIVO - EVASIÓN DINÁMICA CON OCTOMAP (CÁMARA RGB-D)
     # =========================================================================
     def demo_evasion_octomap():
         if not getattr(robot, "moveit_manager", None):
@@ -273,43 +170,153 @@ def run(robot: BaseRobotController, **kwargs):
 
 
     # =========================================================================
-    # MÓDULO 4: DEMO MÚLTIPLES CONFIGURACIONES PARA UNA MISMA POSE (PCI)
+    # MÓDULO 2: DEMO MÚLTIPLES CONFIGURACIONES PARA UNA MISMA POSE (PCI)
     # =========================================================================
     def demo_cambio_configuraciones():
         print("\n" + "=" * 68)
         print(" DEMO DIDÁCTICA: MÚLTIPLES CONFIGURACIONES PARA UNA MISMA POSE")
         print("=" * 68)
 
-        if hasattr(robot, "toggle_ros_connection"):
-            robot.toggle_ros_connection(False)
+        # Definir herramienta (TCP) y Workobject
+        tool = SE3(-1.71381642, 106.90735789, 28.32702833) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
+        wobj = SE3()
 
         # Usamos la pose de Entrega como punto testigo espacial
-        pose_testigo = SE3(314, -163, 382) * SE3.RPY([-53, -8, -121], unit="deg")
-        robt_semilla = RobTarget(pose_testigo, [-1, 1, -1])
+        pose_objetivo = SE3(267.95, -119.19, 245.12) * SE3.RPY([-178.93, 3.58, 58.22], unit='deg')
+        robt_base = RobTarget(pose_objetivo)
 
-        if hasattr(robot, "MostrarTerna"):
-            robot.MostrarTerna(pose_testigo, "Punto_Testigo_Espacial")
+        # Mostrar la terna objetivo en RViz si estamos en ROS
+        if hasattr(robot, "show_tf"):
+            robot.show_tf(wobj * pose_objetivo, "Pose_Objetivo")
 
-        try:
-            configs_validas = robt_semilla.find_valid_configs(pinza, wobj_nulo)
-            configs_validas = [list(c) for c in configs_validas]
-        except Exception:
-            configs_validas = [[-1, 1, -1], [-1, 1, 1]]
+        # Buscar todas las configuraciones analíticas válidas con el modelo del robot
+        configs_validas = robt_base.find_valid_configs(tool, wobj)
+        if not configs_validas:
+            print("[!] La pose elegida está fuera del alcance para cualquier configuración.")
+            return
 
-        print(f"[*] Se encontraron {len(configs_validas)} soluciones cinemáticas para el mismo punto:")
-        for idx, c in enumerate(configs_validas[:3], start=1):
-            print(f"\n>>> [Solución #{idx}] Llegando al punto testigo con Configuración {c}...")
-            ir_a_home_seguro(robot, speed=35)
-            time.sleep(0.6)
-            try:
-                robot.MoveJ(RobTarget(pose_testigo, c), speed=30, tool=pinza, wobj=wobj_nulo)
-                time.sleep(2.5)
-            except Exception as e:
-                print(f"    [!] Configuración {c} omitida ({e})")
+        # Calcular para cada configuración sus ángulos exactos, manipulabilidad y colisión
+        opciones = []
+        pose_brida = wobj * pose_objetivo * tool.inv()
 
-        print("\n>>> Regresando a Home...")
-        ir_a_home_seguro(robot, speed=30)
+        for conf in configs_validas:
+            robt_cand = RobTarget(pose_objetivo, list(conf))
+            q_sol = robot.cobot_tb.ikine(pose_brida, list(conf))[0]
+            manip = robot._manipulability(q_sol, wobj, tool, q_unit='rad', debug=False)
 
+            libre_colision = True
+            if hasattr(robot, "moveit_manager") and robot.moveit_manager is not None:
+                try:
+                    libre_colision = bool(robot.moveit_manager._check_collision(robt_cand, tool, wobj))
+                except Exception:
+                    libre_colision = True
+
+            opciones.append({
+                'conf': list(conf),
+                'robt': robt_cand,
+                'q': np.array(q_sol).flatten(),
+                'manip': float(manip),
+                'ok': libre_colision
+            })
+
+        # Home definido ligeramente fuera del 0 exacto para que el IK de RobTarget no falle al planificar con MoveIt
+        q_home_ik =  np.deg2rad([0.0, -1.0, 2.0, -1.0, -1.0, 0.0]).tolist()
+        robt_home = RobTarget.from_q(q_home_ik, pinza)
+
+        # Estado articular actual para encadenar los cambios de configuración desde donde está el robot
+        q_now = np.array(obtener_q_actual(robot), dtype=float).flatten()
+        ultimo_idx = 0
+
+        while True:
+            conf_actual = robot.cobot_tb.calc_conf(q_now)
+
+            print("\n" + "=" * 72)
+            print(f" POSE OBJETIVO: X={pose_objetivo.t[0]:.1f}, Y={pose_objetivo.t[1]:.1f}, Z={pose_objetivo.t[2]:.1f} mm")
+            print(f" Estado ACTUAL: Conf={conf_actual} | q(°)= {np.round(np.rad2deg(q_now), 1)}")
+            print("=" * 72)
+
+            for i, opt in enumerate(opciones, start=1):
+                estado = "OK" if opt['ok'] else "COLISIÓN"
+                q_deg = np.round(np.rad2deg(opt['q']), 1)
+                marca = " <-- [Seleccionada]" if (i - 1) == ultimo_idx else ""
+                print(f"  [{i}] Conf: {str(opt['conf']):<13} | {estado:<8} | W={opt['manip']:.2f} | q(°)= {q_deg}{marca}")
+
+            print("-" * 72)
+            print(" Comandos disponibles:")
+            print("  - Número (1..N) : Previsualizar configuración en RViz (Goal naranja)")
+            print("  - 'p' + Número  : Ir con el planificador MoveIt desde la configuración ACTUAL (ej: p1, p2)")
+            print("  - 'h'           : Ir a posición HOME con el planificador MoveIt")
+            print("  - 'q'           : Salir")
+
+            entrada = input("\nSeleccione acción: ").strip().lower()
+
+            if entrada == 'q':
+                break
+
+            elif entrada == 'h':
+                if hasattr(robot, "moveit_manager") and robot.moveit_manager is not None:
+                    print(">>> Planificando y ejecutando ida a HOME con MoveIt desde la posición actual...")
+                    q_plan = robot.moveit_manager.plan_and_execute(
+                        target=robt_home,
+                        start=q_now.tolist(),
+                        tool=tool,
+                        wobj=wobj,
+                        execute=True,
+                        update_rviz=True,
+                        planner_id = "BiTRRTkConfigDefault"
+                    )
+                    if q_plan is not None and len(q_plan) > 0:
+                        q_now = np.array(q_plan[-1][:6], dtype=float).flatten()
+                else:
+                    print("[!] MoveIt no está activo.")
+                continue
+
+            # Detectar únicamente los comandos 'v' (1..N) o 'p' (p1..pN)
+            if entrada.isdigit():
+                modo = 'v'
+                idx = int(entrada) - 1
+            elif entrada.startswith('p') and entrada[1:].isdigit():
+                modo = 'p'
+                idx = int(entrada[1:]) - 1
+            else:
+                print("[!] Entrada no válida. Use 1..N, p1..pN, 'h' o 'q'.")
+                continue
+
+            if not (0 <= idx < len(opciones)):
+                print(f"[!] Elija un número entre 1 y {len(opciones)}.")
+                continue
+
+            ultimo_idx = idx
+            elegida = opciones[idx]
+            robt_elegido = elegida['robt']
+
+            if modo == 'v':
+                print(f">>> Previsualizando configuración #{idx+1}: {elegida['conf']}...")
+                if hasattr(robot, "moveit_manager") and robot.moveit_manager is not None:
+                    robot.moveit_manager.move_goal(robt_elegido, tool=tool, wobj=wobj, publish_tf=True)
+                elif hasattr(robot, "view_pose"):
+                    robot.view_pose(robt_elegido, tool=tool, wobj=wobj)
+
+            elif modo == 'p':
+                if not elegida['ok']:
+                    print("[!] Esa configuración está en colisión. MoveIt rechazará el plan.")
+                    continue
+
+                if hasattr(robot, "moveit_manager") and robot.moveit_manager is not None:
+                    print(f">>> Planificando en MoveIt desde {conf_actual} hacia Conf #{idx+1}: {elegida['conf']}...")
+                    q_plan = robot.moveit_manager.plan_and_execute(
+                        target=robt_elegido,
+                        start=q_now.tolist(),  # Parte de la configuración actual en la que está
+                        tool=tool,
+                        wobj=wobj,
+                        execute=True,
+                        update_rviz=True,
+                        planner_id = "BiTRRTkConfigDefault"
+                    )
+                    if q_plan is not None and len(q_plan) > 0:
+                        q_now = np.array(q_plan[-1][:6], dtype=float).flatten()
+    
+    
     # =========================================================================
     # BUCLE PRINCIPAL DEL MENÚ DE LA NOCHE DE LOS MUSEOS
     # =========================================================================
@@ -317,19 +324,10 @@ def run(robot: BaseRobotController, **kwargs):
     ir_a_home_seguro(robot, speed=30)
 
     while True:
-        n1 = len(catalogo.get(1) or catalogo.get("1") or []) if catalogo else 0
-        n2 = len(catalogo.get(2) or catalogo.get("2") or []) if catalogo else 0
-        n3 = len(catalogo.get(3) or catalogo.get("3") or []) if catalogo else 0
 
         print("\n" + "=" * 68)
         print("   PANEL DE CONTROL MAESTRO - LA NOCHE DE LOS MUSEOS (MyCobot 320)")
         print("=" * 68)
-        print(" --- SHOW DE LLAVEROS (MULTICONFIGURACIÓN + MOVEL) ---")
-        print(f"  [1] Saludar + Entregar Llavero 1 ({n1} variantes)")
-        print(f"  [2] Saludar + Entregar Llavero 2 ({n2} variantes)")
-        print(f"  [3] Saludar + Entregar Llavero 3 ({n3} variantes)")
-        print("  [a] Modo Azar: Sortear Llavero y Configuración")
-        print("  [s] Solo Saludar al público")
         print("\n --- SHOW DE VISIÓN 3D Y CONCEPTOS DE INGENIERÍA ---")
         print("  [v] Desafío en Vivo: Esquivar Obstáculo Real con Cámara (OctoMap)")
         print("  [c] Demo Configuraciones: Llegar al mismo punto con distintas posturas")
@@ -347,14 +345,7 @@ def run(robot: BaseRobotController, **kwargs):
             ir_a_home_seguro(robot, speed=30)
         elif op == "o":
             limpiar_octomap()
-            print("[OK] OctoMap limpiado.")
-        elif op == "s":
-            saludar()
-        elif op == "a":
-            disp = [k for k in (1, 2, 3) if (catalogo and (catalogo.get(k) or catalogo.get(str(k))))]
-            ejecutar_llave(random.choice(disp) if disp else 1, con_saludo=True)
-        elif op in ("1", "2", "3"):
-            ejecutar_llave(int(op), con_saludo=True)
+            print("[OK] OctoMap limpiado.") 
         elif op == "v":
             demo_evasion_octomap()
         elif op == "c":

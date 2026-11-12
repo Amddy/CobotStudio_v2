@@ -208,40 +208,20 @@ class MoveItManager(Node):
             timeout=timeout, pipeline_id=pipeline_id, planner_id=planner_id
         )
         
-        if q_list is None:
+        if q_list is None or traj_msg is None:
             return None
 
-        # Guardar la última trayectoria
         with self._lock:
             self.last_q_trajectory = q_list
 
-        joint_names_used, q_start_h, q_goal_h, _ = self._harmonize_joint_inputs(self.joint_names_full, q_start_list, q_goal_list)
+        joint_names_used, q_start_h, q_goal_h, _ = self._harmonize_joint_inputs(
+            self.joint_names_full, q_start_list, q_goal_list
+        )
 
         if execute:
-            q_start_for_build = q_start_h
-            target_dim = len(self.joint_names_full)
-
-            if q_start_for_build is None or len(q_start_for_build) < target_dim:
-                # Obtener estado actual completo
-                curr_full = self.ROSManager_ref.get_current_q(prefer_gripper=True, timeout=0.5)
-                
-                if curr_full is not None:
-                    if q_start_for_build is None:
-                        q_start_for_build = list(curr_full)
-                    else:
-                        # Inicio del brazo + gripper actual
-                        missing_count = target_dim - len(q_start_for_build)
-                        # Si faltan datos se agrega la diferencia en las dimensiones (el gripper)
-                        gripper_vals = list(curr_full)[-missing_count:]
-                        q_start_for_build = list(q_start_for_build) + gripper_vals
-
-            jt = self._build_joint_trajectory(
-                self.joint_names_full,
-                q_list,
-                q_start=q_start_for_build,
-                )
-            
-            self.get_logger().debug(f"Trayectoria construida. Joints: {len(jt.joint_names)}, Puntos: {len(jt.points)}")
+            # Usar directamente el JointTrajectory con los timestamps reales de MoveIt
+            jt = traj_msg.joint_trajectory
+            self.get_logger().debug(f"Enviando trayectoria de MoveIt. Joints: {len(jt.joint_names)}, Puntos: {len(jt.points)}")
 
             ok = self._send_trajectory_action(jt)
             if not ok:
@@ -250,104 +230,135 @@ class MoveItManager(Node):
         if update_rviz:
             try:
                 self.move_goal(q_goal_h)
-                time.sleep(1)
+                time.sleep(0.5)
             except Exception:
-                self.get_logger().warn(f"move_goal falló o no disponible.")
+                self.get_logger().warn("move_goal falló o no disponible.")
             
             try:
                 self._trigger_rviz_update_goal()
             except Exception:
                 self.get_logger().warn("trigger_rviz_update_goal falló o no disponible.")
-                pass
         
         return q_list
 
 
-    def save_trajectory(self, filename: str, variable_name: str = "TRAJ", freq: float = 20.0) -> bool:
+    def save_trajectory(self, trajectory_name: str, file_name: str = 'moveit_traj.py',
+                        directory: str = 'Trayectorias', sample_hz: float = 25.0,
+                        max_servo_deg_s: float = 150.0, lead_gain: float = 1.10,
+                        min_speed: int = 6, max_speed: int = 90) -> bool:
         """
-        Interpola la trayectoria de MoveIt en la PC a frecuencia constante (freq),
-        convierte a grados y pre-calcula la velocidad (1-100) de cada tramo.
-        Soporta trayectorias generadas desde RViz (_last_display_trajectory)
-        o por código (last_robot_trajectory).
+        Re-muestrea la última trayectoria planificada (por código o desde RViz) mediante CubicSpline
+        a frecuencia constante (25 Hz) y traduce el perfil de velocidades al comando escalar speed (1..100)
+        con cola de asentamiento anti-caída en los últimos 3 puntos.
         """
+        # 1. Obtener la última trayectoria planificada (por código o por panel de RViz)
         with self._lock:
-            display_msg = self._last_display_trajectory
             robot_traj = self.last_robot_trajectory
+            display_traj = self._last_display_trajectory
 
-        # Obtener JointTrajectory ya sea del tópico de RViz o del servicio plan_kinematic_path
         jt = None
-        if display_msg is not None and display_msg.trajectory:
-            jt = display_msg.trajectory[0].joint_trajectory
-        elif robot_traj is not None and robot_traj.joint_trajectory.points:
+        if robot_traj is not None and hasattr(robot_traj, "joint_trajectory") and robot_traj.joint_trajectory.points:
             jt = robot_traj.joint_trajectory
+        elif display_traj is not None and hasattr(display_traj, "trajectory") and len(display_traj.trajectory) > 0:
+            jt = display_traj.trajectory[0].joint_trajectory
 
         if jt is None or not jt.points:
-            self.get_logger().error("save_trajectory: No hay trayectoria planificada para guardar.")
+            self.get_logger().error("No hay una trayectoria planificada válida para guardar.")
             return False
 
-        # Asegurar el orden correcto de las 6 articulaciones del brazo según URDF
-        arm_target_names = self.joint_names_full[:6] if self.joint_names_full else jt.joint_names[:6]
-        if all(name in jt.joint_names for name in arm_target_names):
-            idx_map = [jt.joint_names.index(name) for name in arm_target_names]
-        else:
+        points = jt.points
+
+        # Asegurar el orden físico de las 6 articulaciones del brazo
+        arm_order = self.joint_names_full[:6] if self.joint_names_full else []
+        try:
+            idx_map = [jt.joint_names.index(jn) for jn in arm_order]
+        except ValueError:
             idx_map = list(range(6))
 
-        # Extraer tiempos y posiciones originales
+        # 2. Extraer tiempos y posiciones originales en radianes
         t_orig = []
         q_orig_rad = []
-        for p in jt.points:
-            t_sec = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
-            if t_orig and t_sec <= t_orig[-1]:
-                continue
+        for p in points:
+            t_sec = float(p.time_from_start.sec) + float(p.time_from_start.nanosec) * 1e-9
+            if len(t_orig) > 0 and t_sec <= t_orig[-1]:
+                continue  # Filtrar timestamps duplicados
             t_orig.append(t_sec)
-            q_orig_rad.append([p.positions[i] for i in idx_map])
+            q_orig_rad.append([float(p.positions[i]) for i in idx_map])
 
-        t_orig = np.array(t_orig)
-        q_orig_deg = np.rad2deg(np.array(q_orig_rad))
+        t_orig = np.asarray(t_orig, dtype=float)
+        q_orig_rad = np.asarray(q_orig_rad, dtype=float)
+        q_orig_deg = np.rad2deg(q_orig_rad)
 
-        duracion = t_orig[-1]
-        if duracion <= 0 or len(t_orig) < 2:
-            self.get_logger().error("save_trajectory: Duración inválida o menos de 2 puntos.")
-            return False
+        total_time = float(t_orig[-1])
+        dt = 1.0 / float(sample_hz)
 
-        # Re-muestrear a intervalos constantes (ej. 20 Hz -> cada 0.05 s)
-        dt = 1.0 / freq
-        t_interp = np.arange(0.0, duracion, dt)
-        if t_interp[-1] < duracion:
-            t_interp = np.append(t_interp, duracion)
+        # 3. Interpolación con Spline Cúbico en el tiempo original de MoveIt
+        if len(t_orig) >= 2 and total_time > dt:
+            t_interp = np.arange(0.0, total_time, dt)
+            if not np.isclose(t_interp[-1], total_time):
+                t_interp = np.append(t_interp, total_time)
 
-        # Interpolación suave (posición en deg y velocidad angular en deg/s)
-        cs = CubicSpline(t_orig, q_orig_deg, axis=0)
-        q_interp_deg = cs(t_interp)
-        vel_deg_s = np.abs(cs(t_interp, 1))
+            cs_rad = CubicSpline(t_orig, q_orig_rad, bc_type='clamped')
+            cs_deg = CubicSpline(t_orig, q_orig_deg, bc_type='clamped')
 
-        # Mapear velocidad máxima del paso a la escala 1 a 100 de pymycobot
-        MAX_SERVO_DEG_S = 140.0
-        max_vel_por_paso = np.max(vel_deg_s, axis=1)
-        speeds = np.clip(np.round((max_vel_por_paso / MAX_SERVO_DEG_S) * 100), 8, 100).astype(int)
+            q_interp_rad = cs_rad(t_interp)
+            q_interp_deg = cs_deg(t_interp)
+            vel_inst_deg_s = np.abs(cs_deg(t_interp, 1))
+        else:
+            t_interp = t_orig
+            q_interp_rad = q_orig_rad
+            q_interp_deg = q_orig_deg
+            vel_inst_deg_s = np.zeros_like(q_orig_deg)
 
-        tray_folder = self.project_root / "Trayectorias"
-        tray_folder.mkdir(parents=True, exist_ok=True)
-        if not filename.endswith(".py"):
-            filename += ".py"
-        full_path = tray_folder / filename
+        # 4. Cálculo del comando escalar único 'speed' (1..100) con rampa final anti-caída
+        n_pts = len(t_interp)
+        traj_export = []
+        for k in range(n_pts):
+            q_rad_list = [round(float(val), 6) for val in q_interp_rad[k]]
+            t_val = round(float(t_interp[k]), 4)
 
-        try:
-            mode = 'a' if full_path.exists() else 'w'
-            with open(full_path, mode) as f:
-                if mode == 'w':
-                    f.write("# Formato: [ ([q1..q6 en deg], speed_1_100, t_sec), ... ]\n\n")
-                f.write(f"{variable_name} = [\n")
-                for pos, spd, t_val in zip(q_interp_deg, speeds, t_interp):
-                    pos_clean = [round(float(x), 2) for x in pos]
-                    f.write(f"    ({pos_clean}, {int(spd)}, {t_val:.4f}),\n")
-                f.write("]\n\n")
-            self.get_logger().info(f"Trayectoria '{variable_name}' guardada en {full_path} ({len(t_interp)} puntos).")
-            return True
-        except Exception as e:
-            self.get_logger().error(f"Error guardando trayectoria: {e}")
-            return False
+            v_inst_max = float(np.max(vel_inst_deg_s[k]))
+            if k > 0:
+                dt_step = max(1e-4, float(t_interp[k] - t_interp[k - 1]))
+                dq_step_deg = np.abs(q_interp_deg[k] - q_interp_deg[k - 1])
+                v_sec_max = float(np.max(dq_step_deg) / dt_step)
+            else:
+                v_sec_max = v_inst_max
 
+            v_req_deg_s = max(v_inst_max, v_sec_max) * float(lead_gain)
+            raw_pct = (v_req_deg_s / float(max_servo_deg_s)) * 100.0
+            spd_int = int(np.clip(round(raw_pct), min_speed, max_speed))
+
+            # Cola de asentamiento progresiva en los últimos 3 puntos para eliminar caída por inercia
+            if n_pts >= 4:
+                if k == n_pts - 3:
+                    spd_int = min(spd_int, 16)
+                elif k == n_pts - 2:
+                    spd_int = min(spd_int, 11)
+                elif k == n_pts - 1:
+                    spd_int = min(spd_int, 8)
+
+            traj_export.append((q_rad_list, spd_int, t_val))
+
+        # 5. Guardar dentro de self.project_root / directory para que load_data lo encuentre siempre
+        if not file_name.endswith(".py"):
+            file_name += ".py"
+        target_dir = self.project_root / directory
+        target_dir.mkdir(parents=True, exist_ok=True)
+        filepath = target_dir / file_name
+
+        mode = 'a' if filepath.exists() else 'w'
+        with open(filepath, mode, encoding='utf-8') as f:
+            f.write(f"\n{trajectory_name} = [\n")
+            for q_r, spd, t_s in traj_export:
+                f.write(f"    ({q_r}, {spd}, {t_s}),\n")
+            f.write("]\n")
+
+        self.get_logger().info(
+            f"Trayectoria '{trajectory_name}' guardada en {filepath} "
+            f"({n_pts} pts @ {sample_hz}Hz, T={total_time:.2f}s)."
+        )
+        return True
         
     def _display_cb(self, msg: DisplayTrajectory):
         """
@@ -426,7 +437,7 @@ class MoveItManager(Node):
             self._last_display_trajectory = None
    
     def _plan_joint_trajectory(self, q_goal, q_start=None, group_name=None, timeout=5.0,
-                               vel_scale: float = 0.6 , acc_scale: float = 0.6,
+                               vel_scale: float = 0.3 , acc_scale: float = 0.3,
                                pipeline_id: str = "ompl",
                                planner_id: str = "RRTConnectkConfigDefault"):
         """

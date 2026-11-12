@@ -80,7 +80,8 @@ def planificar_tramo(
     tool: SE3,
     nombre_var: str,
     evitar: list = None,
-    verificar_descenso_z: float = 0.0
+    verificar_descenso_z: float = 0.0,
+    ompl_planner: str = "BiTRRTkConfigDefault"
 ):
     candidatas = obtener_configs_sin_colision(
         robot, robt_base, tool, verificar_descenso_z=verificar_descenso_z
@@ -100,7 +101,8 @@ def planificar_tramo(
             start=start_q,
             tool=tool,
             execute=True,
-            update_rviz=False
+            update_rviz=False,
+            planner_id = ompl_planner
         )
 
         if not q_traj:
@@ -112,11 +114,13 @@ def planificar_tramo(
             print(f"     [!] Colisión detectada en el trayecto de {conf}. Descartando...")
             continue
 
-        robot.moveit_manager.save_trajectory(ARCHIVO_SALIDA, nombre_var)
+        robot.moveit_manager.save_trajectory(file_name = ARCHIVO_SALIDA, trajectory_name = nombre_var)
         print(f"     [OK] '{nombre_var}' guardada limpia (incluyendo margen para bajar {verificar_descenso_z} mm).")
         return list(q_traj[-1][:6]), conf
 
     raise RuntimeError(f"No se encontró trayectoria sin colisión para '{nombre_var}'.")
+
+
 
 def run(robot: ROSManager, **kwargs):
     if not getattr(robot, "moveit_manager", None):
@@ -129,8 +133,6 @@ def run(robot: ROSManager, **kwargs):
     q_home = np.deg2rad([0.0, -1.0, 2.0, -1.0, -1.0, 0.0]).tolist()
     Home = RobTarget.from_q(q_home, pinza)
 
-    # saludo1 = RobTarget(SE3(205.52, -156.04, 387.39) * SE3.RPY([151.19, -0.01, 58.25], unit='deg'), [1, -1, 1])
-    # saludo2 = RobTarget(SE3(141.52, -116.41, 356.81) * SE3.RPY([-165.70, -0.01, 58.26], unit='deg'), [1, -1, 1])
 
     llaves = {
         1: RobTarget(SE3(338.51, -35.45, 200.05) * SE3.RPY([-179.77, -1.45, 64.10], unit='deg'), [-1, 1, -1]),
@@ -143,13 +145,6 @@ def run(robot: ROSManager, **kwargs):
     carpeta_tray.mkdir(parents=True, exist_ok=True)
     ruta_archivo = carpeta_tray / f"{ARCHIVO_SALIDA}.py"
     ruta_archivo.write_text("# Formato: [ ([q1..q6 en deg], speed_1_100, t_sec), ... ]\n\n", encoding="utf-8")
-
-    # # 1. Generar Saludo
-    # print("\n=== GENERANDO SALUDO ===")
-    # q_s1, _ = planificar_tramo(robot, saludo1, q_home, pinza, "SALUDO_1")
-    # q_s2, _ = planificar_tramo(robot, saludo2, q_s1, pinza, "SALUDO_2")
-    # q_s3, _ = planificar_tramo(robot, saludo1, q_s2, pinza, "SALUDO_3")
-    # planificar_tramo(robot, Home, q_s3, pinza, "SALUDO_HOME")
 
     # 2. Generar Variantes de Llave 1 y Llave 2
     catalogo_rutas = {1: [], 2: [], 3: []}

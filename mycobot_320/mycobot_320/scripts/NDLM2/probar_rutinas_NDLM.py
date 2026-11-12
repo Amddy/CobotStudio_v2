@@ -20,24 +20,25 @@ def run(robot: BaseRobotController, **kwargs):
         print(f"[!] No se encontró CATALOGO_RUTAS en Trayectorias/{ARCHIVO_TRAJ}.py")
         return
 
-    # def saludar():
-    #     print("\n>>> Saludando...")
-    #     robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_1", tool=pinza)
-    #     robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_2", tool=pinza)
-    #     robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_3", tool=pinza)
-    #     robot.traj_moveit(ARCHIVO_TRAJ, "SALUDO_HOME", tool=pinza)
-    #     time.sleep(ESPERA_ENTRE_TRAMOS)
+    def saludar():
+        saludo1 = RobTarget(SE3(215, 0.5, 425) * SE3.Ry(np.pi/2) * SE3.Rz(np.pi/2), [-1, 1, 1])
+        saludo2 = RobTarget(SE3(250, 0.5, 350) * SE3.Ry(np.pi/2) * SE3.Rz(np.pi/2) * SE3.Rx(np.pi/4), [-1, 1, 1])
+        robot.MoveJ(saludo1, 50, pinza, SE3())
+        robot.MoveJ(saludo2, 40, pinza, SE3())
+        robot.MoveJ(saludo1, 30, pinza, SE3())
+        robot.GoHome(30)
+
 
     def ejecutar_llave(num_llave: int):
         variantes = catalogo.get(num_llave) or []
         if not variantes:
-            print(f"[!] No hay variantes válidas para la Llave {num_llave}.")
+            print(f"[!] No hay variantes válidas para la Llave {num_llave}.")   
             return
 
         ruta = random.choice(variantes)
         print(f"\n>>> Ejecutando Llave {num_llave} (Variante {ruta['variante']}) "
               f"| Config Llave: {ruta['conf_llave']} -> Entrega: {ruta['conf_entrega']}")
-
+         
         # saludar()
 
         robot.GripperState(60, 30)
@@ -62,8 +63,10 @@ def run(robot: BaseRobotController, **kwargs):
         print("  [2/3] Llave -> Entrega...")
         robot.traj_moveit(ARCHIVO_TRAJ, ruta["entrega"], tool=pinza)
 
-        print(f"  [*] Esperando {ESPERA_ENTREGA_PUBLICO}s para entregar...")
-        time.sleep(ESPERA_ENTREGA_PUBLICO)
+        
+        # print(f"  [*] Esperando {ESPERA_ENTREGA_PUBLICO}s para entregar...")
+        input("  [*] Presione [Enter] para realizar la entrega...")
+        # time.sleep(ESPERA_ENTREGA_PUBLICO)
         robot.GripperState(100, 30)
         time.sleep(1.0)
 
@@ -77,14 +80,14 @@ def run(robot: BaseRobotController, **kwargs):
         print(f"  [2] Llave 2 ({len(catalogo.get(2, []))} variantes limpias)")
         print(f"  [3] Llave 3 ({len(catalogo.get(3, []))} variantes limpias)")
         print("  [a] Aleatorio (Llave 1, 2 o 3)")
-        # print("  [s] Solo saludar")
+        print("  [s] Solo saludar")
         print("  [q] Salir")
 
         op = input("\nOpción: ").strip().lower()
         if op == "q":
             break
-        # elif op == "s":
-        #     saludar()
+        elif op == "s":
+            saludar()
         elif op == "a":
             ejecutar_llave(random.choice([1, 2, 3]))
         elif op in ("1", "2", "3"):

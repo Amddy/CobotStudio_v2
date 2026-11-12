@@ -2,8 +2,8 @@
 
 # For beginners, we downscale velocity and acceleration limits.
 # You can always specify higher scaling factors (<= 1.0) in your motion requests.  # Increase the values below to 1.0 to always move at maximum speed.
-default_velocity_scaling_factor: 0.1
-default_acceleration_scaling_factor: 0.1
+default_velocity_scaling_factor: 0.3
+default_acceleration_scaling_factor: 0.3
 
 # Specific joint properties can be changed with the keys [max_position, min_position, max_velocity, max_acceleration]
 # Joint limits can be turned off with [has_velocity_limits, has_acceleration_limits]
@@ -23,11 +23,6 @@ joint_limits:
     max_velocity: 0
     has_acceleration_limits: false
     max_acceleration: 0
-  gripper_controller:
-    has_velocity_limits: false
-    max_velocity: 0
-    has_acceleration_limits: false
-    max_acceleration: 0
   gripper_left3_to_gripper_left1:
     has_velocity_limits: false
     max_velocity: 0
@@ -38,39 +33,66 @@ joint_limits:
     max_velocity: 0
     has_acceleration_limits: false
     max_acceleration: 0
+
+
+  gripper_controller:
+    has_velocity_limits: true
+    max_velocity: 2.0
+    has_acceleration_limits: true
+    max_acceleration: 2.0 
+
+
+
+# Configuracion optimizada segun myCobot 320 Pi:
+# - J2: SM120BL (120 kg.cm, 232:1, 50 RPM vacio) -> max_vel: 1.80 rad/s, max_acc: 2.50 rad/s^2
+# - J1, J3: SM-8524-C001 (85 kg.cm, 254:1, 65 RPM vacio) -> max_vel: 2.10 rad/s, max_acc: 3.00 rad/s^2
+# - J4: SM-8524-C001 (menor brazo de palanca) -> max_vel: 2.40 rad/s, max_acc: 3.50 rad/s^2
+# - J5, J6: SM-45BL-C001 (45 kg.cm, 353:1, 70 RPM vacio) -> max_vel: 2.60 rad/s, max_acc: 4.00 rad/s^2
+  
+# J1 - Base (Feetech SM-8524-C001: 85 kg.cm, 254:1, 65 RPM vacio)
   joint2_to_joint1:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 2.10
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 3.00
+
+  # J2 - Hombro (Feetech SM120BL: 120 kg.cm, 232:1, 50 RPM vacio)
   joint3_to_joint2:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 1.80
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 2.50
+
+  # J3 - Codo (Feetech SM-8524-C001: 85 kg.cm, 254:1, 65 RPM vacio)
   joint4_to_joint3:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 2.10
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 3.00
+
+  # J4 - Muneca 1 (Feetech SM-8524-C001: 85 kg.cm, 254:1, 65 RPM vacio)
   joint5_to_joint4:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 2.40
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 3.50
+
+  # J5 - Muneca 2 (Feetech SM-45BL-C001: 45 kg.cm, 353:1, 70 RPM vacio)
   joint6_to_joint5:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 2.60
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 4.00
+
+  # J6 - Brida TCP (Feetech SM-45BL-C001: 45 kg.cm, 353:1, 70 RPM vacio)
   joint6output_to_joint6:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 2.60
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 4.00
 
-  cartesian_limits:
-    max_trans_vel: 0.25
-    max_trans_acc: 0.50
-    max_trans_dec: -0.50
-    max_rot_vel: 1.57
+cartesian_limits:
+  max_trans_vel: 0.25
+  max_trans_acc: 0.50
+  max_trans_dec: -0.50
+  max_rot_vel: 1.57
