@@ -1767,7 +1767,14 @@ class MyCobotController(BaseRobotController):
         # Se aprovecha la cinemática inversa de la toolbox para tener control de la config.
         q_pose = self.cobot_tb.ikine(pose_calc, robtarget.config)[0]
 
-        self.mc.sync_send_angles(np.degrees(q_pose).tolist(), speed)
+        if self._server_ref is not None:
+            self._server_ref.pause_serial_reading(True)
+            time.sleep(0.05)
+        try:
+            self.mc.sync_send_angles(np.degrees(q_pose).tolist(), speed)
+        finally:
+            if self._server_ref is not None:
+                self._server_ref.pause_serial_reading(False)
 
     def MoveL(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='MoveL_wobj', robt_name='MoveL_robt'):
         """
@@ -1786,7 +1793,14 @@ class MyCobotController(BaseRobotController):
         pose = list(pose_calc.t) + list(pose_calc.rpy(order='zyx', unit='deg'))
         pose_v2 = self.matrix_to_pose(pose_calc)
 
-        self.mc.sync_send_coords(pose, speed, 1)
+        if self._server_ref is not None:
+            self._server_ref.pause_serial_reading(True)
+            time.sleep(0.05)
+        try:
+            self.mc.sync_send_coords(pose, speed, 1)
+        finally:
+            if self._server_ref is not None:
+                self._server_ref.pause_serial_reading(False)
 
     def GripperState(self, apertura: int, spd: int = 30):
         """
@@ -1795,9 +1809,11 @@ class MyCobotController(BaseRobotController):
         """
         apertura_int = int(np.clip(round(apertura), 0, 100))
         spd_int = int(np.clip(round(spd), 1, 100))
+        real_aperture = float(apertura_int)
 
         if self._server_ref is not None:
             self._server_ref.pause_serial_reading(True)
+            time.sleep(0.05)
 
         try:
             self.mc.set_gripper_mode(0)
@@ -1809,7 +1825,6 @@ class MyCobotController(BaseRobotController):
                 self.mc.set_gripper_value(apertura_int, spd_int, 1)
 
             time.sleep(0.45)
-            real_aperture = float(apertura_int)
             if hasattr(self.mc, "get_gripper_value"):
                 val_leido = self.mc.get_gripper_value()
                 if val_leido is not None and 0 <= val_leido <= 100:
@@ -1828,10 +1843,17 @@ class MyCobotController(BaseRobotController):
         """
         Implementación de MoveJ_q para el robot físico MyCobot320.
         """
-        if unit == 'rad':
-            self.mc.sync_send_angles(np.degrees(q).tolist(), spd)
-        elif unit == 'deg':
-            self.mc.sync_send_angles(q.tolist(), spd)
+        if self._server_ref is not None:
+            self._server_ref.pause_serial_reading(True)
+            time.sleep(0.05)
+        try:
+            if unit == 'rad':
+                self.mc.sync_send_angles(np.degrees(q).tolist(), spd)
+            elif unit == 'deg':
+                self.mc.sync_send_angles(q.tolist(), spd)
+        finally:
+            if self._server_ref is not None:
+                self._server_ref.pause_serial_reading(False)
 
     def MoveL_gt(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), skip: int = 10):
         """
@@ -1988,7 +2010,6 @@ class MyCobotController(BaseRobotController):
             self.logger.error(f"No se pudo cargar la trayectoria {traj_name} de {archivo}")
             return None
 
-        # Detectar automáticamente si los vectores articulares están en grados (> 2*pi) o en radianes (<= 2*pi)
         all_q_max = max(
             float(np.max(np.abs(np.asarray(item[0] if (isinstance(item, (tuple, list)) and len(item) in (2, 3)) else item, dtype=float)[:6])))
             for item in traj_data
@@ -1996,11 +2017,11 @@ class MyCobotController(BaseRobotController):
         is_degrees = (all_q_max > (2.0 * np.pi + 0.05))
 
         waypoints = []
-        dt_fallback = 0.04
+        dt_fallback = 0.05  # 20 Hz
         for idx, item in enumerate(traj_data):
             if isinstance(item, (tuple, list)) and len(item) == 3:
                 pt_raw, spd_val, t_sec = item
-                spd = int(np.clip(spd_val, 6, 95))
+                spd = int(np.clip(spd_val, 8, 95))
                 t_target = float(t_sec) * float(factor_tiempo)
             elif isinstance(item, (tuple, list)) and len(item) == 2:
                 pt_raw, t_sec = item
@@ -2013,28 +2034,37 @@ class MyCobotController(BaseRobotController):
 
             q_arr = np.asarray(pt_raw, dtype=float)[:6]
             q_deg = [round(float(x), 2) for x in (q_arr if is_degrees else np.rad2deg(q_arr))]
-            spd_scaled = int(np.clip(round(spd / float(factor_tiempo)), 6, 95))
+            spd_scaled = int(np.clip(round(spd / float(factor_tiempo)), 8, 95))
             waypoints.append((q_deg, spd_scaled, t_target))
 
-        # Asegurar que el robot esté en el punto inicial (t=0) antes de largar el cronómetro
-        first_q_deg = waypoints[0][0]
-        q_actual = self.mc.get_angles()
-        if not q_actual or np.max(np.abs(np.array(q_actual) - np.array(first_q_deg))) > 2.0:
-            self.mc.sync_send_angles(first_q_deg, 15)
-
-        # Activar modo de procesamiento continuo (sin frenar entre puntos intermedios)
-        self.mc.set_fresh_mode(1)
-        time.sleep(0.04)
-
-        self.logger.info(f"Ejecutando {len(waypoints)} waypoints sincronizados...")
-
-        # Si el modo --bridge está activo, pausamos get_angles() para no saturar el puerto serie
+        # PAUSAR EL BRIDGE ANTES DE CUALQUIER ACCESO AL PUERTO SERIE
         if self._server_ref is not None:
             self._server_ref.pause_serial_reading(True)
+            time.sleep(0.06)  # Esperar a que termine cualquier lectura en vuelo del hilo bridge
 
-        start_time = time.perf_counter()
+        q_alcanzado_deg = None
+        last_q_deg = waypoints[-1][0]
 
         try:
+            # Verificar punto inicial sin bloquear con sync_send_angles si ya está cerca
+            first_q_deg = waypoints[0][0]
+            q_actual = self.mc.get_angles()
+            if q_actual and len(q_actual) == 6:
+                max_diff_init = float(np.max(np.abs(np.array(q_actual) - np.array(first_q_deg))))
+                if max_diff_init > 5.0:
+                    # Solo acomodar si realmente está lejos (> 5°), usando espera acotada
+                    self.mc.set_fresh_mode(0)
+                    time.sleep(0.03)
+                    self.mc.send_angles(first_q_deg, 25)
+                    time.sleep(max(0.4, min(2.0, max_diff_init / 20.0)))
+
+            # 3. Activar fresh_mode(1) con el puerto serie 100% libre de colisiones
+            self.mc.set_fresh_mode(1)
+            time.sleep(0.04)
+
+            self.logger.info(f"Ejecutando {len(waypoints)} waypoints sincronizados...")
+            start_time = time.perf_counter()
+
             for q_deg, spd, t_sec in waypoints[1:]:
                 wait_time = (start_time + t_sec) - time.perf_counter()
                 if wait_time > 0.001:
@@ -2042,20 +2072,29 @@ class MyCobotController(BaseRobotController):
 
                 self.mc.send_angles(q_deg, spd)
 
-                # Informar al servidor TCP en RAM para verlo en vivo en RViz
                 if self._server_ref is not None:
                     self._server_ref.set_external_angles(q_deg)
 
-            # Ajuste fino del último punto antes de reactivar la lectura periódica del bridge
-            time.sleep(0.05)
+            t_real_bucle = time.perf_counter() - start_time
+            t_planificado = waypoints[-1][2]
+
+            # 4. Dejar que el robot termine de asentarse suavemente SIN re-disparar send_angles en modo 0
+            time.sleep(0.35)
             self.mc.set_fresh_mode(0)
             time.sleep(0.05)
-            last_q_deg = waypoints[-1][0]
-            self.mc.send_angles(last_q_deg, 10)
-            time.sleep(0.25)
+
+            # 5. Leer encoders finales ANTES de despausar el bridge para evitar choques serie
+            for _ in range(3):
+                lectura = self.mc.get_angles()
+                if lectura and len(lectura) == 6:
+                    q_alcanzado_deg = lectura
+                    break
+                time.sleep(0.03)
+
+            if q_alcanzado_deg and self._server_ref is not None:
+                self._server_ref.set_external_angles(q_alcanzado_deg)
 
         finally:
-            # Asegurar que siempre vuelva a fresh_mode(0) y reanude la lectura de encoders
             try:
                 self.mc.set_fresh_mode(0)
             except Exception:
@@ -2063,17 +2102,9 @@ class MyCobotController(BaseRobotController):
             if self._server_ref is not None:
                 self._server_ref.pause_serial_reading(False)
 
-        # Medir duración real del bucle vs tiempo planificado por MoveIt
-        t_real_bucle = time.perf_counter() - start_time - 0.35
-        t_planificado = waypoints[-1][2]
-
-        q_alcanzado_deg = self.mc.get_angles()
-
-        # Armar el RobTarget de la pose destino
         last_q_rad = np.deg2rad(last_q_deg)
         last_robt = RobTarget.from_q(last_q_rad, tool)
 
-        # Validación cuantitativa (Tiempo, Error Articular y Error en TCP)
         if q_alcanzado_deg and len(q_alcanzado_deg) == 6:
             err_q_deg = np.abs(np.array(last_q_deg) - np.array(q_alcanzado_deg))
             max_err_q = float(np.max(err_q_deg))

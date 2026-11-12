@@ -197,8 +197,8 @@ class CobotServer:
         Ciclo que consulta al robot y actualiza la memoria.
         Corre a una frecuencia mayor que el envío para satisfacer el muestreo.
         """
-        # Lee el robot periódicamente al doble de su frecuencia de envío
-        poll_interval = 1.0 / max(1.0, self.send_rate_hz * 2.0)
+        # Lee el robot periódicamente a su frecuencia de envío
+        poll_interval = 1.0 / max(1.0, self.send_rate_hz)
 
         while not self._shutdown.is_set():
             if self._pause_serial.is_set():
@@ -228,8 +228,7 @@ class CobotServer:
         adapta las rampas 0x29 en SRAM si cambió la escala de aceleración y reporta
         las métricas cuantitativas de tiempo y error articular final.
         """
-        import numpy as np
-
+        
         if self.mc is None:
             print("[CobotServer] Error: Instancia 'mc' no disponible para ejecutar trayectoria.")
             with self._lock:
@@ -241,15 +240,16 @@ class CobotServer:
                 self._latest["traj_status"] = "ABORTED"
             return
 
-        # 1. Mejora 1: Ajustar rampas 0x29 en SRAM si CobotClient informó una nueva escala
+        # 1. Ajustar rampas 0x29 en SRAM si CobotClient informó una nueva escala
         if acc_scale is not None:
             self._init_servo_ram_dynamics(acc_scale=float(acc_scale))
 
         print(f"[CobotServer] ¡Trayectoria recibida de MoveIt ({len(points)} waypoints)! Empezando movimiento...")
         self._cancel_traj.clear()
 
-        # Pausar lectura periódica de get_angles() para no saturar el puerto serie
+        # Pausar lectura periódica de get_angles() y esperar que termine cualquier lectura en vuelo
         self.pause_serial_reading(True)
+        time.sleep(0.05)
         with self._lock:
             self._latest["traj_status"] = "EXECUTING"
             self._latest["traj_metrics"] = None
@@ -288,16 +288,21 @@ class CobotServer:
             t_real_bucle = time.perf_counter() - start_time
             t_planificado = float(points[-1][7]) if len(points[-1]) >= 8 else float(points[-1][6])
 
-            # Finalizar movimiento y ajuste fino del último punto
-            time.sleep(0.05)
+            # Dejar asentar suavemente sin re-disparar send_angles en modo 0
+            last_angles_deg = [float(x) for x in points[-1][:6]]
+            time.sleep(1)
             self.mc.set_fresh_mode(0)
             time.sleep(0.05)
-            last_angles_deg = [float(x) for x in points[-1][:6]]
-            self.mc.send_angles(last_angles_deg, 10)
-            time.sleep(0.25)
 
-            # 2. Mejora 2: Leer encoders reales tras el asentamiento y calcular métricas Online
-            q_real_deg = self.read_angles()
+            # 2. Leer encoders reales tras el asentamiento y calcular métricas Online
+            q_real_deg = None
+            for _ in range(3):
+                lectura = self.read_angles()
+                if lectura is not None and len(lectura) == 6:
+                    q_real_deg = lectura
+                    break
+                time.sleep(0.03)
+
             metrics = {
                 "t_real": round(t_real_bucle, 3),
                 "t_plan": round(t_planificado, 3),
@@ -329,6 +334,10 @@ class CobotServer:
             with self._lock:
                 self._latest["traj_status"] = "ABORTED"
         finally:
+            try:
+                self.mc.set_fresh_mode(0)
+            except Exception:
+                pass
             self.pause_serial_reading(False)
 
 
@@ -383,6 +392,7 @@ class CobotServer:
     def _handle_client(self, conn, addr):
         """Envía el estado actual al cliente conectado en formato JSON Lines."""
 
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         print(f"[CobotServer] cliente conectado {addr}")
         self._client_connected.set()
 

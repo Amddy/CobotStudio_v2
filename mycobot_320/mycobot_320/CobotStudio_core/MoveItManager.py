@@ -329,15 +329,6 @@ class MoveItManager(Node):
             raw_pct = (v_req_deg_s / float(max_servo_deg_s)) * 100.0
             spd_int = int(np.clip(round(raw_pct), min_speed, max_speed))
 
-            # Cola de asentamiento progresiva en los últimos 3 puntos para eliminar caída por inercia
-            if n_pts >= 4:
-                if k == n_pts - 3:
-                    spd_int = min(spd_int, 16)
-                elif k == n_pts - 2:
-                    spd_int = min(spd_int, 11)
-                elif k == n_pts - 1:
-                    spd_int = min(spd_int, 8)
-
             traj_export.append((q_rad_list, spd_int, t_val))
 
         # 5. Guardar dentro de self.project_root / directory para que load_data lo encuentre siempre
